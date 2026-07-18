@@ -12,5 +12,9 @@
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "svelte": "^5.56.6",
     "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.25.0",
+    "lucide-svelte": "^1.0.1"
   }
 }
