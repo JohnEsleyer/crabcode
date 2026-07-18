@@ -12,8 +12,25 @@
     RenamePath
   } from '../wailsjs/go/main/App';
   import FileNode from './FileNode.svelte';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { FolderOpen, FilePlus, FolderPlus, Undo, Redo } from '@lucide/svelte';
+
+  // CodeMirror imports
+  import { EditorView, basicSetup } from 'codemirror';
+  import { EditorState, Compartment } from '@codemirror/state';
+  import { keymap } from '@codemirror/view';
+  import { indentWithTab, undo, redo, undoDepth, redoDepth } from '@codemirror/commands';
+  import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+  import { tags as t } from '@lezer/highlight';
+
+  // Language support packages
+  import { javascript } from '@codemirror/lang-javascript';
+  import { python } from '@codemirror/lang-python';
+  import { go } from '@codemirror/lang-go';
+  import { rust } from '@codemirror/lang-rust';
+  import { html } from '@codemirror/lang-html';
+  import { css } from '@codemirror/lang-css';
+  import { json } from '@codemirror/lang-json';
 
   let currentFolder = $state('');
   let fileTree = $state([]);
@@ -25,16 +42,18 @@
   let isSaving = $state(false);
   let statusMessage = $state('Ready');
 
-  let autoSaveEnabled = $state(true);
-
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
-  
   let contextMenu = $state({ show: false, x: 0, y: 0, node: null });
 
-  let textareaEl = $state(null);
-  let highlightEl = $state(null);
-  let lineNumbersEl = $state(null);
+  // CodeMirror DOM Reference and View instances
+  let editorContainer = $state(null);
+  let view = null;
+  const languageConf = new Compartment();
+
+  // Undo/Redo track state
+  let canUndo = $state(false);
+  let canRedo = $state(false);
 
   let lineCount = $derived(editorContent.split('\n').length);
   let charCount = $derived(editorContent.length);
@@ -47,102 +66,124 @@
   let lastSavedContent = $state('');
   let activeFileUnsaved = $derived(activeFilePath !== '' && editorContent !== lastSavedContent);
 
-  let history = $state([]);
-  let historyIndex = $state(-1);
-  let lastHistoryContent = '';
-  let isUndoingOrRedoing = false;
-  let historyTimeout;
-  const MAX_HISTORY = 100;
+  // Custom theme styling mapping to CrabCode parameters
+  const crabCodeTheme = EditorView.theme({
+    "&": {
+      color: "#edf2f7",
+      backgroundColor: "#1e1e1e",
+      height: "100%",
+      width: "100%"
+    },
+    ".cm-content": {
+      caretColor: "#ff5a36",
+      fontFamily: "'Fira Code', 'JetBrains Mono', 'Courier New', monospace",
+      fontSize: "13px",
+      padding: "16px 0"
+    },
+    ".cm-cursor, .cm-dropCursor": { 
+      borderLeftColor: "#ff5a36",
+      borderLeftWidth: "2px"
+    },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { 
+      backgroundColor: "#ff5a3622 !important" 
+    },
+    ".cm-gutters": {
+      backgroundColor: "#1e1e1e",
+      color: "#858585",
+      borderRight: "1px solid #2d2d2d",
+      fontFamily: "'Fira Code', 'Courier New', monospace",
+      fontSize: "13px",
+      paddingTop: "16px",
+      paddingBottom: "16px"
+    },
+    ".cm-gutterElement": {
+      padding: "0 12px 0 16px"
+    },
+    ".cm-activeLine": { backgroundColor: "#ffffff03" },
+    ".cm-activeLineGutter": { backgroundColor: "#ffffff03", color: "#edf2f7" }
+  }, { dark: true });
 
-  function highlight(code, ext) {
-    if (!code) return '';
-    let escaped = code
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+  const crabHighlightStyle = HighlightStyle.define([
+    { tag: t.keyword, color: "#569CD6", fontWeight: "600" },
+    { tag: t.comment, color: "#6A9955", fontStyle: "italic" },
+    { tag: t.string, color: "#CE9178" },
+    { tag: t.number, color: "#B5CEA8" },
+    { tag: t.className, color: "#4EC9B0" },
+    { tag: t.typeName, color: "#4EC9B0" },
+    { tag: t.function(t.variableName), color: "#DCDCAA" },
+    { tag: t.definition(t.variableName), color: "#9CDCFE" },
+    { tag: t.variableName, color: "#9CDCFE" },
+    { tag: t.operator, color: "#D4D4D4" },
+    { tag: t.propertyName, color: "#9CDCFE" },
+    { tag: t.heading, color: "#ff5a36", fontWeight: "bold" }
+  ]);
 
-    if (!ext) return escaped;
-    const lang = ext.toLowerCase();
-
-    let keywords = [];
-    if (lang === 'go') {
-      keywords = ['package', 'import', 'func', 'var', 'const', 'type', 'struct', 'interface', 'return', 'if', 'else', 'for', 'range', 'switch', 'case', 'default', 'select', 'chan', 'go', 'defer', 'nil', 'true', 'false', 'map', 'make', 'new'];
-    } else if (['js', 'ts', 'svelte'].includes(lang)) {
-      keywords = ['import', 'from', 'export', 'default', 'const', 'let', 'var', 'function', 'class', 'extends', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'new', 'this', 'true', 'false', 'null', 'undefined', 'async', 'await', 'try', 'catch', 'finally', 'throw'];
-    } else if (lang === 'rs') {
-      keywords = ['fn', 'let', 'mut', 'const', 'static', 'pub', 'use', 'mod', 'struct', 'enum', 'trait', 'impl', 'return', 'if', 'else', 'loop', 'while', 'for', 'in', 'match', 'as', 'ref', 'self', 'Self', 'true', 'false', 'unsafe', 'where', 'type'];
-    } else if (lang === 'py') {
-      keywords = ['def', 'class', 'import', 'from', 'as', 'return', 'if', 'elif', 'else', 'for', 'while', 'in', 'is', 'and', 'or', 'not', 'try', 'except', 'finally', 'raise', 'with', 'assert', 'pass', 'break', 'continue', 'lambda', 'None', 'True', 'False'];
+  function getLanguageExtension(fileName) {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    switch (ext) {
+      case 'js':
+      case 'ts':
+      case 'jsx':
+      case 'tsx':
+        return javascript();
+      case 'py':
+        return python();
+      case 'go':
+        return go();
+      case 'rs':
+        return rust();
+      case 'html':
+      case 'svelte':
+        return html();
+      case 'css':
+        return css();
+      case 'json':
+        return json();
+      default:
+        return [];
     }
+  }
 
-    let placeholders = [];
-    let id = 0;
-    function keep(text, className) {
-      const ph = `___TOKEN_PH_${id++}___`;
-      placeholders.push({ ph, text, className });
-      return ph;
-    }
+  function updateEditorContent(content, fileName) {
+    if (!view) return;
 
-    if (lang === 'py') {
-      escaped = escaped.replace(/(#.*)/g, (m) => keep(m, 'hl-comment'));
-    } else if (lang === 'html' || lang === 'svelte') {
-      escaped = escaped.replace(/(&lt;!--[\s\S]*?--&gt;)/g, (m) => keep(m, 'hl-comment'));
-    } else {
-      escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, (m) => keep(m, 'hl-comment'));
-      escaped = escaped.replace(/(\/\/.*)/g, (m) => keep(m, 'hl-comment'));
-    }
+    const state = EditorState.create({
+      doc: content,
+      extensions: [
+        basicSetup,
+        keymap.of([indentWithTab]),
+        crabCodeTheme,
+        syntaxHighlighting(crabHighlightStyle),
+        languageConf.of(getLanguageExtension(fileName)),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            editorContent = update.state.doc.toString();
+            canUndo = undoDepth(update.state) > 0;
+            canRedo = redoDepth(update.state) > 0;
+          }
+        })
+      ]
+    });
 
-    if (lang === 'py') {
-      escaped = escaped.replace(/("""[\s\S]*?"""|'''[\s\S]*?''')/g, (m) => keep(m, 'hl-string'));
-      escaped = escaped.replace(/('[^']*'|"[^"]*")/g, (m) => keep(m, 'hl-string'));
-    } else if (['html', 'svelte', 'css'].includes(lang)) {
-      escaped = escaped.replace(/('[^']*'|"[^"]*")/g, (m) => keep(m, 'hl-string'));
-    } else {
-      escaped = escaped.replace(/(`[\s\S]*?`)/g, (m) => keep(m, 'hl-string'));
-      escaped = escaped.replace(/("(\\.|[^"\\])*"|'(\\.|[^'\\])*')/g, (m) => keep(m, 'hl-string'));
-    }
+    view.setState(state);
+    canUndo = false;
+    canRedo = false;
+  }
 
-    escaped = escaped.replace(/\b(\d+(\.\d+)?)\b/g, '<span class="hl-number">$1</span>');
-
-    if (lang === 'css') {
-      escaped = escaped.replace(/([a-zA-Z0-9_-]+)\s*:/g, '<span class="hl-keyword">$1</span>:');
-      escaped = escaped.replace(/(#[a-zA-Z0-9_-]+|\.[a-zA-Z0-9_-]+)/g, '<span class="hl-type">$1</span>');
-    } else if (lang === 'html' || lang === 'svelte') {
-      escaped = escaped.replace(/&lt;(\/?[a-zA-Z0-9:-]+)/g, '&lt;<span class="hl-keyword">$1</span>');
-      escaped = escaped.replace(/\s([a-zA-Z0-9:-]+)=/g, ' <span class="hl-type">$1</span>=');
-    } else if (lang === 'json') {
-      escaped = escaped.replace(/"([^"]+)":/g, '"<span class="hl-keyword">$1</span>":');
-      escaped = escaped.replace(/\b(true|false|null)\b/g, '<span class="hl-type">$1</span>');
-    } else {
-      if (keywords.length > 0) {
-        const kwRegex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
-        escaped = escaped.replace(kwRegex, '<span class="hl-keyword">$1</span>');
+  // Reactive Effect to handle mounting/unmounting of CodeMirror Editor instance
+  $effect(() => {
+    if (editorContainer && !view) {
+      view = new EditorView({
+        parent: editorContainer
+      });
+      if (activeFilePath) {
+        updateEditorContent(editorContent, activeFileName);
       }
-      escaped = escaped.replace(/\b([a-zA-Z0-9_]+)(?=\s*\()/g, '<span class="hl-function">$1</span>');
-      const defaultTypes = ['int', 'float', 'string', 'bool', 'char', 'void', 'error', 'any', 'byte', 'rune', 'usize', 'u32', 'i32', 'u64', 'i64', 'f64', 'f32'];
-      escaped = escaped.replace(new RegExp(`\\b(${defaultTypes.join('|')})\\b`, 'g'), '<span class="hl-type">$1</span>');
-      escaped = escaped.replace(/\b([A-Z][a-zA-Z0-9_]*)\b/g, '<span class="hl-type">$1</span>');
+    } else if (!editorContainer && view) {
+      view.destroy();
+      view = null;
     }
-
-    for (let i = placeholders.length - 1; i >= 0; i--) {
-      const { ph, text, className } = placeholders[i];
-      escaped = escaped.replace(ph, `<span class="${className}">${text}</span>`);
-    }
-
-    return escaped;
-  }
-
-  let highlightedCode = $derived(highlight(editorContent, fileExtension));
-
-  function syncScroll() {
-    if (textareaEl && highlightEl) {
-      highlightEl.scrollTop = textareaEl.scrollTop;
-      highlightEl.scrollLeft = textareaEl.scrollLeft;
-    }
-    if (textareaEl && lineNumbersEl) {
-      lineNumbersEl.scrollTop = textareaEl.scrollTop;
-    }
-  }
+  });
 
   let toastId = 0;
   function addToast(message, type = 'info', duration = 3000) {
@@ -172,31 +213,6 @@
     });
   }
 
-  let autoSaveTimeout;
-
-  $effect(() => {
-    const content = editorContent;
-    const path = activeFilePath;
-    
-    if (autoSaveEnabled && path) {
-      if (content !== untrack(() => lastSavedContent)) {
-        if (autoSaveTimeout) clearTimeout(autoSaveTimeout);
-        autoSaveTimeout = setTimeout(async () => {
-          isSaving = true;
-          try {
-            await SaveFile(path, content);
-            lastSavedContent = content;
-            addToast('Auto-saved successfully', 'success', 1500);
-          } catch (err) {
-            addToast('Auto-save failed: ' + err, 'error');
-          } finally {
-            isSaving = false;
-          }
-        }, 1500);
-      }
-    }
-  });
-
   $effect(() => {
     if (modal.show) {
       setTimeout(() => {
@@ -204,11 +220,6 @@
         if (el) el.focus();
       }, 50);
     }
-  });
-
-  $effect(() => {
-    const _ = editorContent;
-    setTimeout(syncScroll, 0);
   });
 
   async function chooseFolder() {
@@ -295,14 +306,6 @@
   }
 
   async function openFile(node) {
-    if (autoSaveTimeout) {
-      clearTimeout(autoSaveTimeout);
-      autoSaveTimeout = null;
-    }
-    if (historyTimeout) {
-      clearTimeout(historyTimeout);
-      historyTimeout = null;
-    }
     try {
       const content = await ReadFile(node.path);
       activeFilePath = node.path;
@@ -310,13 +313,7 @@
       editorContent = content;
       lastSavedContent = content;
 
-      history = [{
-        content: content,
-        selectionStart: 0,
-        selectionEnd: 0
-      }];
-      historyIndex = 0;
-      lastHistoryContent = content;
+      updateEditorContent(content, node.name);
 
       statusMessage = 'Opened file: ' + node.name;
       addToast('Opened ' + node.name);
@@ -348,89 +345,15 @@
     }
   }
 
-  function recordHistoryState(immediate = false) {
-    if (isUndoingOrRedoing) return;
-    if (!textareaEl) return;
-    if (editorContent === lastHistoryContent) return;
-
-    const newState = {
-      content: editorContent,
-      selectionStart: textareaEl.selectionStart,
-      selectionEnd: textareaEl.selectionEnd
-    };
-
-    const save = () => {
-      const truncatedHistory = history.slice(0, historyIndex + 1);
-      history = [...truncatedHistory, newState];
-      if (history.length > MAX_HISTORY) {
-        history.shift();
-      }
-      historyIndex = history.length - 1;
-      lastHistoryContent = editorContent;
-    };
-
-    if (historyTimeout) clearTimeout(historyTimeout);
-
-    if (immediate) {
-      save();
-    } else {
-      historyTimeout = setTimeout(save, 800);
+  function triggerUndo() {
+    if (view) {
+      undo(view);
     }
   }
 
-  function handleTextareaInput() {
-    recordHistoryState(false);
-  }
-
-  function handleTextareaKeyDown(event) {
-    if (event.key === ' ' || event.key === 'Enter' || event.key === 'Tab') {
-      recordHistoryState(true);
-    }
-  }
-
-  function undo() {
-    if (historyIndex > 0) {
-      if (editorContent !== lastHistoryContent) {
-        recordHistoryState(true);
-      }
-
-      isUndoingOrRedoing = true;
-      historyIndex--;
-      const state = history[historyIndex];
-      editorContent = state.content;
-      lastHistoryContent = state.content;
-
-      setTimeout(() => {
-        if (textareaEl) {
-          textareaEl.focus();
-          textareaEl.setSelectionRange(state.selectionStart, state.selectionEnd);
-          syncScroll();
-        }
-        isUndoingOrRedoing = false;
-      }, 0);
-    } else {
-      addToast('Nothing to undo', 'info', 1000);
-    }
-  }
-
-  function redo() {
-    if (historyIndex < history.length - 1) {
-      isUndoingOrRedoing = true;
-      historyIndex++;
-      const state = history[historyIndex];
-      editorContent = state.content;
-      lastHistoryContent = state.content;
-
-      setTimeout(() => {
-        if (textareaEl) {
-          textareaEl.focus();
-          textareaEl.setSelectionRange(state.selectionStart, state.selectionEnd);
-          syncScroll();
-        }
-        isUndoingOrRedoing = false;
-      }, 0);
-    } else {
-      addToast('Nothing to redo', 'info', 1000);
+  function triggerRedo() {
+    if (view) {
+      redo(view);
     }
   }
 
@@ -439,15 +362,6 @@
     if (isMeta && event.key === 's') {
       event.preventDefault();
       saveCurrentFile();
-    } else if (isMeta && event.shiftKey && (event.key === 'z' || event.key === 'Z')) {
-      event.preventDefault();
-      redo();
-    } else if (isMeta && event.key === 'z') {
-      event.preventDefault();
-      undo();
-    } else if (isMeta && event.key === 'y') {
-      event.preventDefault();
-      redo();
     }
   }
 
@@ -506,8 +420,6 @@
         activeFileName = '';
         editorContent = '';
         lastSavedContent = '';
-        history = [];
-        historyIndex = -1;
       }
 
       const parentPath = getParentPath(node.path);
@@ -566,6 +478,12 @@
       window.removeEventListener('keydown', handleKeyDown);
     };
   });
+
+  onDestroy(() => {
+    if (view) {
+      view.destroy();
+    }
+  });
 </script>
 
 <svelte:window onclick={closeContextMenu} onkeydown={(e) => e.key === 'Escape' && closeContextMenu()} />
@@ -583,6 +501,7 @@
     class="context-menu" 
     style="top: {contextMenu.y}px; left: {contextMenu.x}px;"
     onclick={(e) => e.stopPropagation()}
+    onkeydown={(e) => e.key === 'Escape' && closeContextMenu()}
     role="menu"
     tabindex="-1"
   >
@@ -676,49 +595,25 @@
         <div class="header-actions">
           <button 
             class="header-action-btn" 
-            onclick={undo} 
-            disabled={historyIndex <= 0} 
+            onclick={triggerUndo} 
+            disabled={!canUndo} 
             title="Undo (Ctrl+Z)"
           >
             <Undo size={14} />
           </button>
           <button 
             class="header-action-btn" 
-            onclick={redo} 
-            disabled={historyIndex >= history.length - 1} 
+            onclick={triggerRedo} 
+            disabled={!canRedo} 
             title="Redo (Ctrl+Y)"
           >
             <Redo size={14} />
           </button>
-
-          <label class="autosave-label">
-            <input type="checkbox" class="autosave-checkbox" bind:checked={autoSaveEnabled} />
-            <span>Auto Save</span>
-          </label>
         </div>
       </div>
 
       <div class="editor-body">
-        <div class="line-numbers" bind:this={lineNumbersEl}>
-          {#each Array(lineCount) as _, i}
-            <div class="line-num">{i + 1}</div>
-          {/each}
-        </div>
-        <div class="editor-container-inner">
-          <pre class="highlight-overlay" bind:this={highlightEl}>{@html highlightedCode}</pre>
-          <textarea
-            class="code-textarea"
-            bind:value={editorContent}
-            bind:this={textareaEl}
-            onscroll={syncScroll}
-            oninput={handleTextareaInput}
-            onkeydown={handleTextareaKeyDown}
-            spellcheck="false"
-            autocomplete="off"
-            autocorrect="off"
-            autocapitalize="off"
-          ></textarea>
-        </div>
+        <div class="editor-container-inner" bind:this={editorContainer}></div>
       </div>
     {:else}
       <div class="editor-empty-state">
@@ -946,22 +841,6 @@
     border-color: #1a1a24;
   }
 
-  .autosave-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: #a0aec0;
-    cursor: pointer;
-    user-select: none;
-    margin-left: 8px;
-  }
-
-  .autosave-checkbox {
-    accent-color: #ff5a36;
-    cursor: pointer;
-  }
-
   .file-info {
     display: flex;
     align-items: center;
@@ -991,32 +870,6 @@
     background-color: #1e1e1e;
   }
 
-  .line-numbers {
-    padding-top: 16px;
-    padding-bottom: 16px;
-    width: 52px;
-    background-color: #1e1e1e;
-    border-right: 1px solid #2d2d2d;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    user-select: none;
-    color: #858585;
-    font-family: 'Fira Code', 'Courier New', monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    padding-right: 12px;
-    box-sizing: border-box;
-    overflow: hidden;
-  }
-
-  .line-num {
-    height: 1.6em;
-    line-height: 1.6;
-    display: flex;
-    align-items: center;
-  }
-
   .editor-container-inner {
     position: relative;
     flex: 1;
@@ -1025,61 +878,9 @@
     background-color: #1e1e1e;
   }
 
-  .code-textarea, .highlight-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
+  .editor-container-inner :global(.cm-editor) {
     height: 100%;
-    margin: 0;
-    padding: 16px;
-    font-family: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    tab-size: 4;
-    -moz-tab-size: 4;
-    white-space: pre;
-    word-wrap: normal;
-    overflow: auto;
-    box-sizing: border-box;
-    border: none;
-    outline: none;
-  }
-
-  .code-textarea {
-    color: transparent;
-    background: transparent;
-    caret-color: #ff5a36;
-    z-index: 2;
-    resize: none;
-  }
-
-  .highlight-overlay {
-    color: #d4d4d4;
-    z-index: 1;
-    pointer-events: none;
-    background-color: transparent;
-  }
-
-  :global(.hl-comment) {
-    color: #6A9955;
-    font-style: italic;
-  }
-  :global(.hl-string) {
-    color: #CE9178;
-  }
-  :global(.hl-keyword) {
-    color: #569CD6;
-    font-weight: 500;
-  }
-  :global(.hl-type) {
-    color: #4EC9B0;
-  }
-  :global(.hl-function) {
-    color: #DCDCAA;
-  }
-  :global(.hl-number) {
-    color: #B5CEA8;
+    width: 100%;
   }
 
   .editor-empty-state {
