@@ -8,8 +8,7 @@
     expandedFolders, 
     folderContents, 
     activeFilePath, 
-    activeFileUnsaved = false,
-    onNodeContextMenu
+    activeFileUnsaved = false
   } = $props();
 </script>
 
@@ -18,11 +17,6 @@
     <div 
       class="folder-row" 
       onclick={() => toggleFolder(node.path)}
-      oncontextmenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onNodeContextMenu(e, node);
-      }}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === 'Enter' && toggleFolder(node.path)}
@@ -42,7 +36,6 @@
             {folderContents} 
             {activeFilePath}
             {activeFileUnsaved}
-            {onNodeContextMenu}
           />
         {/each}
       </div>
@@ -52,11 +45,6 @@
       class="file-row" 
       class:active={activeFilePath === node.path}
       onclick={() => openFile(node)}
-      oncontextmenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onNodeContextMenu(e, node);
-      }}
       role="button"
       tabindex="0"
       onkeydown={(e) => e.key === 'Enter' && openFile(node)}
@@ -72,7 +60,7 @@
 
 <style>
   .tree-item {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: 'Inter', sans-serif;
     font-size: 13px;
     user-select: none;
   }
@@ -111,24 +99,11 @@
     flex-shrink: 0;
     color: #718096;
   }
-  :global(.folder-row:hover .folder-icon) {
-    color: #edf2f7;
-  }
-  :global(.file-row:hover .file-icon) {
-    color: #edf2f7;
-  }
-  :global(.file-row.active .file-icon) {
-    color: #ff5a36;
-  }
   .name {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
-  }
-  :global(.unsaved-dot) {
-    flex-shrink: 0;
-    margin-left: auto;
   }
   .folder-children {
     border-left: 1px solid #2d3748;
