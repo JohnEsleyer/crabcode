@@ -96,6 +96,19 @@
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
   let showGuideModal = $state(false);
+  let showCreateSandboxModal = $state(false);
+  let newSandboxName = $state('');
+  let selectedSandboxTemplate = $state('python');
+  const sandboxTemplates = [
+    { id: 'python', name: 'Python', color: '#3572A5' },
+    { id: 'go', name: 'Go', color: '#00ADD8' },
+    { id: 'rust', name: 'Rust', color: '#DEA584' },
+    { id: 'java', name: 'Java', color: '#B07219' },
+    { id: 'javascript', name: 'JavaScript', color: '#F7DF1E' },
+    { id: 'typescript', name: 'TypeScript', color: '#3178C6' },
+    { id: 'dart', name: 'Dart', color: '#00B4AB' },
+    { id: 'cpp', name: 'C++', color: '#00599C' },
+  ];
 
   let workspaceEditorContainer = $state(null);
   let notesEditorContainer = $state(null);
@@ -311,6 +324,12 @@
         if (el) el.focus();
       }, 50);
     }
+    if (showCreateSandboxModal) {
+      setTimeout(() => {
+        const el = document.querySelector('.sandbox-name-input');
+        if (el) el.focus();
+      }, 50);
+    }
   });
 
   let toastId = 0;
@@ -521,21 +540,35 @@
     }
   }
 
-  async function handleCreateSandbox() {
+  function openCreateSandboxModal() {
     if (!currentFolder) {
       addToast('Select a workspace first', 'error');
       return;
     }
-    const name = await openPrompt('Sandbox Project Name', 'Experiment 1');
-    if (!name) return;
+    newSandboxName = '';
+    selectedSandboxTemplate = 'python';
+    showCreateSandboxModal = true;
+  }
+
+  async function confirmCreateSandbox() {
+    const name = newSandboxName.trim() || 'Experiment';
+    showCreateSandboxModal = false;
     try {
-      const sandbox = await CreateSandbox(name, '');
+      const sandbox = await CreateSandbox(name, selectedSandboxTemplate);
       sandboxesList = [sandbox, ...sandboxesList];
       await selectSandbox(sandbox);
-      addToast('Sandbox initialized', 'success');
+      addToast('Sandbox created', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
+  }
+
+  function cancelCreateSandbox() {
+    showCreateSandboxModal = false;
+  }
+
+  async function handleCreateSandbox() {
+    openCreateSandboxModal();
   }
 
   async function selectSandbox(sandbox) {
@@ -873,6 +906,7 @@ Format your output clearly, specifying filenames and file contents separately so
   if (e.key === 'Escape') {
     if (modal.show) modal.onCancel();
     if (showGuideModal) showGuideModal = false;
+    if (showCreateSandboxModal) showCreateSandboxModal = false;
   }
 }} />
 
@@ -950,6 +984,51 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
       </div>
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={() => showGuideModal = false}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showCreateSandboxModal}
+  <div class="modal-backdrop" onclick={cancelCreateSandbox} role="presentation">
+    <div
+      class="modal-box sandbox-modal"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.key === 'Escape' && cancelCreateSandbox()}
+      role="dialog"
+      tabindex="-1"
+    >
+      <div class="modal-header">Create Virtual Sandbox</div>
+      <div class="modal-body">
+        <label class="sandbox-modal-label" for="sandboxName">Sandbox Name</label>
+        <input
+          type="text"
+          id="sandboxName"
+          class="modal-input sandbox-name-input"
+          placeholder="My Experiment"
+          bind:value={newSandboxName}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') confirmCreateSandbox();
+            if (e.key === 'Escape') cancelCreateSandbox();
+          }}
+        />
+        <label class="sandbox-modal-label">Template</label>
+        <div class="templates-grid">
+          {#each sandboxTemplates as tmpl}
+            <button
+              class="template-option"
+              class:selected={selectedSandboxTemplate === tmpl.id}
+              onclick={() => selectedSandboxTemplate = tmpl.id}
+            >
+              <span class="template-dot" style="background-color: {tmpl.color}"></span>
+              <span class="template-name">{tmpl.name}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={cancelCreateSandbox}>Cancel</button>
+        <button class="modal-btn primary" onclick={confirmCreateSandbox}>Create Sandbox</button>
       </div>
     </div>
   </div>
@@ -2862,6 +2941,71 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   .modal-box.guide-modal {
     width: 540px;
     max-width: 95%;
+  }
+
+  .modal-box.sandbox-modal {
+    width: 460px;
+    max-width: 95%;
+  }
+
+  .sandbox-modal-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #a0aec0;
+    margin-bottom: 6px;
+    margin-top: 16px;
+  }
+
+  .sandbox-modal-label:first-of-type {
+    margin-top: 0;
+  }
+
+  .templates-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .template-option {
+    background-color: #121217;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 12px 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transition: border-color 0.15s, background-color 0.15s;
+    color: #a0aec0;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .template-option:hover {
+    background-color: #1a1a24;
+    border-color: #4a5568;
+    color: #edf2f7;
+  }
+
+  .template-option.selected {
+    border-color: #ff5a36;
+    background-color: #ff5a3610;
+    color: #edf2f7;
+  }
+
+  .template-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .template-name {
+    text-align: center;
+    line-height: 1.2;
   }
 
   .guide-body {

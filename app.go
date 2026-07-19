@@ -463,7 +463,7 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (a *App) CreateSandbox(name string, configYaml string) (*Sandbox, error) {
+func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
 	}
@@ -471,9 +471,61 @@ func (a *App) CreateSandbox(name string, configYaml string) (*Sandbox, error) {
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	now := time.Now().Format(time.RFC3339)
 
-	if configYaml == "" {
-		configYaml = fmt.Sprintf("name: \"%s\"\nenvironment: \"python\"\nrun_command: \"python3 main.py\"\n", name)
+	type templateConfig struct {
+		configYaml   string
+		mainFileName string
+		mainContent  string
 	}
+
+	templates := map[string]templateConfig{
+		"python": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"python\"\nrun_command: \"python3 main.py\"\n", name),
+			mainFileName: "main.py",
+			mainContent:  "# Python Sandbox\nprint('Hello from CrabCode Python Sandbox!')\n",
+		},
+		"go": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"go\"\nrun_command: \"go run main.go\"\n", name),
+			mainFileName: "main.go",
+			mainContent:  "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from CrabCode Go Sandbox!\")\n}\n",
+		},
+		"rust": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"rust\"\nrun_command: \"rustc main.rs && ./main\"\n", name),
+			mainFileName: "main.rs",
+			mainContent:  "fn main() {\n    println!(\"Hello from CrabCode Rust Sandbox!\");\n}\n",
+		},
+		"java": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"java\"\nrun_command: \"java Main.java\"\n", name),
+			mainFileName: "Main.java",
+			mainContent:  "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from CrabCode Java Sandbox!\");\n    }\n}\n",
+		},
+		"javascript": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"node index.js\"\n", name),
+			mainFileName: "index.js",
+			mainContent:  "// JavaScript Sandbox\nconsole.log('Hello from CrabCode JavaScript Sandbox!');\n",
+		},
+		"typescript": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"npx tsx index.ts\"\n", name),
+			mainFileName: "index.ts",
+			mainContent:  "// TypeScript Sandbox\nconst greeting: string = 'Hello from CrabCode TypeScript Sandbox!';\nconsole.log(greeting);\n",
+		},
+		"dart": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"dart\"\nrun_command: \"dart run main.dart\"\n", name),
+			mainFileName: "main.dart",
+			mainContent:  "// Dart Sandbox\nvoid main() {\n  print('Hello from CrabCode Dart Sandbox!');\n}\n",
+		},
+		"cpp": {
+			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"cpp\"\nrun_command: \"g++ main.cpp -o main && ./main\"\n", name),
+			mainFileName: "main.cpp",
+			mainContent:  "#include <iostream>\n\nint main() {\n    std::cout << \"Hello from CrabCode C++ Sandbox!\" << std::endl;\n    return 0;\n}\n",
+		},
+	}
+
+	tmpl, ok := templates[templateType]
+	if !ok {
+		tmpl = templates["python"]
+	}
+
+	configYaml := tmpl.configYaml
 
 	_, err := a.db.Exec(
 		"INSERT INTO sandboxes (id, name, config_yaml, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -483,7 +535,7 @@ func (a *App) CreateSandbox(name string, configYaml string) (*Sandbox, error) {
 		return nil, err
 	}
 
-	_ = a.SaveSandboxFile(id, "main.py", "# Virtual Sandbox Entrypoint\nprint('Hello from your portable database sandbox!')\n", false)
+	_ = a.SaveSandboxFile(id, tmpl.mainFileName, tmpl.mainContent, false)
 
 	return &Sandbox{
 		ID:         id,
@@ -642,16 +694,28 @@ func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error
 		return "", err
 	}
 
-	cmdParts := strings.Fields(runCmd)
-	if len(cmdParts) == 0 {
-		return "", errors.New("run_command parameter evaluates to empty sequence")
+	shellOps := strings.Contains(runCmd, "&&") || strings.Contains(runCmd, ";") || strings.Contains(runCmd, "|")
+
+	var processID string
+	if shellOps {
+		shell := "sh"
+		shellArg := "-c"
+		if os.PathSeparator == '\\' {
+			shell = "cmd"
+			shellArg = "/c"
+		}
+		processID = "sandbox_" + sandboxID
+		err = a.RunCommand(processID, shell, []string{shellArg, runCmd}, tempDir)
+	} else {
+		cmdParts := strings.Fields(runCmd)
+		if len(cmdParts) == 0 {
+			return "", errors.New("run_command parameter evaluates to empty sequence")
+		}
+		runnerBin := cmdParts[0]
+		runnerArgs := cmdParts[1:]
+		processID = "sandbox_" + sandboxID
+		err = a.RunCommand(processID, runnerBin, runnerArgs, tempDir)
 	}
-
-	runnerBin := cmdParts[0]
-	runnerArgs := cmdParts[1:]
-
-	processID := "sandbox_" + sandboxID
-	err = a.RunCommand(processID, runnerBin, runnerArgs, tempDir)
 	if err != nil {
 		return "", err
 	}
