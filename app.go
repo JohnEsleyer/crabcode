@@ -153,6 +153,10 @@ func (a *App) InitializeCrabFolder(path string) error {
 		"scratch.js": "// Javascript Scratchpad\nconsole.log('Hello from the JavaScript Playground!');\n",
 		"scratch.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from the Go Playground!\")\n}\n",
 		"scratch.rs": "fn main() {\n    println!(\"Hello from the Rust Playground!\");\n}\n",
+		"scratch.java": "// Java Scratchpad\npublic class Scratch {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from the Java Playground!\");\n    }\n}\n",
+		"scratch.ts": "// TypeScript Scratchpad\nconst greeting: string = \"Hello from the TypeScript Playground!\";\nconsole.log(greeting);\n",
+		"scratch.sql": "-- SQL Scratchpad\nCREATE TABLE IF NOT EXISTS scratchpad (id INTEGER PRIMARY KEY, message TEXT);\nINSERT INTO scratchpad (message) VALUES ('Hello from the SQL Playground!');\nSELECT * FROM scratchpad;\n",
+		"scratch.dart": "// Dart Scratchpad\nvoid main() {\n  print('Hello from the Dart Playground!');\n}\n",
 	}
 
 	for fileName, content := range templates {
@@ -185,6 +189,10 @@ func (a *App) InitPlayground() error {
 		"scratch.js": "// Javascript Scratchpad\nconsole.log('Hello from the JavaScript Playground!');\n",
 		"scratch.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from the Go Playground!\")\n}\n",
 		"scratch.rs": "fn main() {\n    println!(\"Hello from the Rust Playground!\");\n}\n",
+		"scratch.java": "// Java Scratchpad\npublic class Scratch {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from the Java Playground!\");\n    }\n}\n",
+		"scratch.ts": "// TypeScript Scratchpad\nconst greeting: string = \"Hello from the TypeScript Playground!\";\nconsole.log(greeting);\n",
+		"scratch.sql": "-- SQL Scratchpad\nCREATE TABLE IF NOT EXISTS scratchpad (id INTEGER PRIMARY KEY, message TEXT);\nINSERT INTO scratchpad (message) VALUES ('Hello from the SQL Playground!');\nSELECT * FROM scratchpad;\n",
+		"scratch.dart": "// Dart Scratchpad\nvoid main() {\n  print('Hello from the Dart Playground!');\n}\n",
 	}
 
 	for fileName, content := range templates {

@@ -675,6 +675,18 @@
       } else if (ext === 'go') {
         runnerCmd = 'go';
         runnerArgs = ['run', activeFilePath];
+      } else if (ext === 'java') {
+        runnerCmd = 'java';
+        runnerArgs = [activeFilePath];
+      } else if (ext === 'ts') {
+        runnerCmd = 'npx';
+        runnerArgs = ['tsx', activeFilePath];
+      } else if (ext === 'dart') {
+        runnerCmd = 'dart';
+        runnerArgs = ['run', activeFilePath];
+      } else if (ext === 'sql') {
+        runnerCmd = 'sqlite3';
+        runnerArgs = [activeFilePath];
       } else {
         consoleLogs = [...consoleLogs, `[Runner Error] No run configuration for ".${ext}" files.`];
         isRunning = false;
