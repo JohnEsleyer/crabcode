@@ -136,7 +136,31 @@ dependencies:
 
 * **run_command**: Tells the CrabCode compiler which script or execution engine to trigger when the run button is pressed. This command is executed in the extracted temporary sandbox folder.
 
-### 2. Relocating Root Settings (`.crabcode`) to an External Drive
+### 2. Global Data Directory (`~/.crabcode`)
+
+CrabCode maintains a global root directory (`~/.crabcode` by default) separate from your per-workspace folders:
+
+```
+~/.crabcode/
+├── settings.json              # Global configuration (root path, preferences)
+├── environments/              # Reserved for future managed runtimes (currently empty)
+└── playground/                # Scratchpad templates for quick experiments
+```
+
+#### The `environments/` Directory
+
+The `environments/` folder is a **planned structural directory**. It exists to reserve a location for future toolchain management features (e.g., downloading and isolating Python virtualenvs, Go SDKs, or Node versions). It is **not populated during normal use**.
+
+Sandbox execution does not use this folder. Instead, sandboxes operate as follows:
+
+1. All sandbox code and configuration is stored **inside SQLite** (`.crab/crab.db`)
+2. When you click **Run**, CrabCode extracts the sandbox's virtual files to `.crab/temp_sandboxes/<id>/`
+3. The `run_command` (e.g., `python3 main.py`, `go run main.go`, `node index.js`) is executed using **whatever language runtimes are already installed on your system `$PATH`**
+4. After execution, the temp directory is cleaned up
+
+The `environments/` folder would only be populated if a future feature adds managed runtime installation — for example, "install Python 3.12 into `environments/` and use that instead of your system Python."
+
+### 3. Relocating Root Settings (`.crabcode`) to an External Drive
 
 To migrate configuration files and universal environments to an external hard drive (e.g., to free up primary disk space):
 
