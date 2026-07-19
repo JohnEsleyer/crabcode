@@ -35,7 +35,8 @@
   import { onMount, onDestroy } from 'svelte';
   import {
     FolderOpen, FilePlus, FolderPlus, Play, Square,
-    Terminal, FileText, Settings, Database, BookOpen, Plus, Trash2, Columns, Check
+    Terminal, FileText, Settings, Database, BookOpen, Plus, Trash2, Columns, Check,
+    HelpCircle
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -94,6 +95,7 @@
 
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
+  let showGuideModal = $state(false);
 
   let workspaceEditorContainer = $state(null);
   let notesEditorContainer = $state(null);
@@ -802,6 +804,28 @@
     return { type: 'p', text: line };
   }
 
+  function copyAIPrompt() {
+    const promptText = `I am using CrabCode, a development workspace with SQLite-backed virtual sandboxes.
+I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS OR EXPERIMENT HERE]
+
+Please generate:
+1. The necessary code files (specifying relative file paths) to accomplish this. The code should be self-contained and ready to execute.
+2. A YAML configuration block containing the "run_command" to execute the sandbox project once compiled in a temporary directory.
+
+The YAML configuration should follow this structure:
+\`\`\`yaml
+name: "My Sandbox Project"
+environment: "[python / node / go / rust / etc.]"
+run_command: "[exact terminal command to run your main file, e.g. 'python3 main.py' or 'node index.js']"
+\`\`\`
+
+Format your output clearly, specifying filenames and file contents separately so I can easily save them into my SQLite virtual filesystem.`;
+
+    navigator.clipboard.writeText(promptText)
+      .then(() => addToast('AI Prompt copied to clipboard', 'success'))
+      .catch((err) => addToast('Failed to copy: ' + String(err), 'error'));
+  }
+
   onMount(() => {
     loadGlobalConfig();
     window.addEventListener('keydown', handleKeyDown);
@@ -833,7 +857,12 @@
   });
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && modal.show && modal.onCancel()} />
+<svelte:window onkeydown={(e) => {
+  if (e.key === 'Escape') {
+    if (modal.show) modal.onCancel();
+    if (showGuideModal) showGuideModal = false;
+  }
+}} />
 
 <div class="toast-container">
   {#each toasts as toast (toast.id)}
@@ -868,6 +897,47 @@
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={modal.onCancel}>Cancel</button>
         <button class="modal-btn primary" onclick={() => modal.onConfirm(modal.value)}>Confirm</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showGuideModal}
+  <div class="modal-backdrop" onclick={() => showGuideModal = false} role="presentation">
+    <div
+      class="modal-box guide-modal"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.key === 'Escape' && (showGuideModal = false)}
+      role="dialog"
+      tabindex="-1"
+    >
+      <div class="modal-header">Sandbox Environment Guide</div>
+      <div class="modal-body guide-body">
+        <p>CrabCode sandboxes are virtual, isolated mini-projects stored inside your workspace SQLite database (<code>.crab/crab.db</code>).</p>
+        <h4>Execution Lifecycle</h4>
+        <ol>
+          <li>Upon execution, CrabCode creates an isolated directory inside <code>.crab/temp_sandboxes/</code>.</li>
+          <li>It extracts all database-stored files associated with the sandbox into this folder.</li>
+          <li>It executes your defined <strong>run_command</strong> inside that compilation directory.</li>
+        </ol>
+        <h4>YAML Configuration</h4>
+        <pre class="guide-code"><code>name: "Weather Tracker Experiment"
+environment: "python"
+run_command: "python3 main.py"</code></pre>
+        <h4>Outsource Setup to AI</h4>
+        <p>Use this prompt template with an AI assistant to generate sandbox files and config:</p>
+        <div class="prompt-box">
+          <div class="prompt-header">
+            <span>AI Prompt Template</span>
+            <button class="copy-prompt-btn" onclick={copyAIPrompt}>Copy</button>
+          </div>
+          <pre class="prompt-preview"><code>I am using CrabCode, a development workspace with SQLite-backed virtual sandboxes.
+I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
+...</code></pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showGuideModal = false}>Close</button>
       </div>
     </div>
   </div>
@@ -1003,9 +1073,14 @@
           {:else if activeTab === 'sandboxes'}
             <div class="section-context-header">
               <span class="project-title">Virtual Sandboxes</span>
-              <button class="toolbar-btn primary" onclick={handleCreateSandbox} title="New Sandbox">
-                <Plus size={13} />
-              </button>
+              <div class="sidebar-toolbar">
+                <button class="toolbar-btn" onclick={() => showGuideModal = true} title="Sandbox Guide">
+                  <HelpCircle size={13} />
+                </button>
+                <button class="toolbar-btn primary" onclick={handleCreateSandbox} title="New Sandbox">
+                  <Plus size={13} />
+                </button>
+              </div>
             </div>
             <div class="sandboxes-list-scroll">
               {#each sandboxesList as sandbox (sandbox.id)}
@@ -1260,6 +1335,14 @@
               <div class="sandbox-actions">
                 <button
                   class="action-btn"
+                  onclick={() => showGuideModal = true}
+                  title="Sandbox Guide"
+                >
+                  <HelpCircle size={13} />
+                  <span>Help</span>
+                </button>
+                <button
+                  class="action-btn"
                   class:active={sandboxTabMode === 'code'}
                   onclick={() => sandboxTabMode = 'code'}
                 >
@@ -1381,10 +1464,16 @@
               <h1>Sandboxes</h1>
               <p>Virtual mini-projects stored in SQLite. Extract to temp, run with YAML-defined commands.</p>
               {#if currentFolder}
-                <button class="action-btn primary" onclick={handleCreateSandbox}>
-                  <Plus size={14} />
-                  <span>Create Sandbox</span>
-                </button>
+                <div style="display: flex; gap: 8px; justify-content: center;">
+                  <button class="action-btn" onclick={() => showGuideModal = true}>
+                    <HelpCircle size={14} />
+                    <span>Guide</span>
+                  </button>
+                  <button class="action-btn primary" onclick={handleCreateSandbox}>
+                    <Plus size={14} />
+                    <span>Create Sandbox</span>
+                  </button>
+                </div>
               {:else}
                 <button class="action-btn" onclick={chooseFolder}>
                   <FolderOpen size={14} />
@@ -1672,7 +1761,8 @@
   .sandboxes-list-scroll::-webkit-scrollbar,
   .virtual-files-list::-webkit-scrollbar,
   .console-body::-webkit-scrollbar,
-  .markdown-rendered-view::-webkit-scrollbar {
+  .markdown-rendered-view::-webkit-scrollbar,
+  .guide-body::-webkit-scrollbar {
     width: 5px;
   }
 
@@ -1681,7 +1771,8 @@
   .sandboxes-list-scroll::-webkit-scrollbar-thumb,
   .virtual-files-list::-webkit-scrollbar-thumb,
   .console-body::-webkit-scrollbar-thumb,
-  .markdown-rendered-view::-webkit-scrollbar-thumb {
+  .markdown-rendered-view::-webkit-scrollbar-thumb,
+  .guide-body::-webkit-scrollbar-thumb {
     background-color: #2d3748;
     border-radius: 3px;
   }
@@ -2754,6 +2845,96 @@
     max-width: 90%;
     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7);
     animation: modalScale 0.15s ease-out;
+  }
+
+  .modal-box.guide-modal {
+    width: 540px;
+    max-width: 95%;
+  }
+
+  .guide-body {
+    max-height: 400px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #cbd5e0;
+    text-align: left;
+  }
+
+  .guide-body h4 {
+    margin: 16px 0 8px 0;
+    color: #edf2f7;
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .guide-body ol {
+    margin: 0 0 16px 0;
+    padding-left: 20px;
+  }
+
+  .guide-body li {
+    margin-bottom: 6px;
+  }
+
+  .guide-code {
+    background-color: #121217;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    padding: 10px;
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+    color: #edf2f7;
+    margin: 8px 0 16px 0;
+    overflow-x: auto;
+  }
+
+  .prompt-box {
+    background-color: #08080c;
+    border: 1px solid #1a1a24;
+    border-radius: 8px;
+    margin-top: 16px;
+    overflow: hidden;
+  }
+
+  .prompt-header {
+    background-color: #121217;
+    padding: 8px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #1a1a24;
+    font-size: 11px;
+    font-weight: 700;
+    color: #718096;
+  }
+
+  .copy-prompt-btn {
+    background-color: #ff5a36;
+    color: white;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.1s;
+  }
+
+  .copy-prompt-btn:hover {
+    background-color: #e04b28;
+  }
+
+  .prompt-preview {
+    padding: 12px;
+    margin: 0;
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: #a0aec0;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+    text-align: left;
   }
 
   .modal-header {

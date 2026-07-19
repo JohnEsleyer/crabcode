@@ -1,78 +1,157 @@
-Here is a professional and structured `README.md` file detailing the intent, design philosophy, and system mechanics of CrabCode.
-
----
-
 # CrabCode
 
-CrabCode is a lightweight desktop-based **Local Code Laboratory and Playbook** designed for rapid, hands-on programming experiments. 
+CrabCode is a lightweight, dark-mode desktop editor and laboratory designed for organizing development projects, maintaining rich learning journals, and conducting isolated scratchpad experiments. 
 
-Unlike standard general-purpose code editors or heavy IDEs, CrabCode functions as a personal "Obsidian vault" for code. It provides a structured space to write, run, and document hundreds of micro-projects—such as testing a network protocol, verifying a data structure, or playing with an API—without the storage bloat and configuration friction of isolated project setups.
-
----
-
-## The Intent
-
-When learning software engineering through first principles, the best practice is to build small, isolated experiments. However, creating hundreds of mini-projects locally leads to two major friction points:
-1. **Dependency Bloat:** Having 50 small Node, Go, or Rust projects results in gigabytes of redundant `node_modules`, package caches, and compiler `target/` directories.
-2. **Context Fragmentation:** Code implementation is often separated from the developer's notes, lessons learned, and run instructions.
-
-CrabCode is designed to address these challenges with a three-part architecture:
-
-* **The Code Playbook (File-System as Source of Truth):** Your experiments are organized as clean directories on your local drive. They remain completely portable, standard source files that you can sync, backup, or version-control with Git.
-* **Shared Runtimes (Zero-Bloat execution):** Instead of each experiment managing its own dependencies, CrabCode utilizes single, shared runtimes per language on your machine. The app dynamically manages compiling and executing code from your playbook using these centralized runtimes.
-* **Integrated Notes & Execution Console:** A side-by-side layout lets you code on the left while reading and writing markdown notes (`README.md`) on the right. An integrated terminal drawer lets you run your script and observe stdout/stderr instantly.
+Built on Go, Svelte, and Wails, CrabCode features a dual-engine layout that combines local directory management with a highly portable, SQLite-backed workspace filesystem.
 
 ---
 
-## Core Features
+## Key Features
 
-### 1. Side-by-Side Notes (Code + Context)
-Every folder in your playbook acts as an entry in your personal programming catalog. 
-* **The Split Pane:** Open any source file to write code on the left, and document your learnings, configurations, or research on the right in Markdown.
-* **Auto-Resolution:** CrabCode automatically detects and binds the nearest companion `README.md` to your active workspace file, ensuring notes are never separated from code.
-
-### 2. Zero-Friction Temporary Playground
-Sometimes you need to test a quick regex, a standard library function, or a single-file concept without naming or dedicating a project directory to it.
-* **The Scratchpad:** Access a global temporary workspace with support for Python, JavaScript, and Go.
-* **Throwaway Sandboxing:** Write your code, run it instantly, and let it save to a hidden, global cache folder that keeps your primary workspace directory clean.
-
-### 3. Integrated Process Execution
-No need to switch to an external terminal.
-* Spawns, monitors, and stops execution processes in the background through the native Go execution engine.
-* Streams execution outputs and errors directly to a collapsible bottom console.
+1. **Integrated Workspace Editor**: Standard file-tree manager for opening, editing, and executing files (Python, Go, Node.js, Rust, HTML, CSS, JSON) within your local physical directory.
+2. **Obsidian-Style Notes (SQLite-Backed)**: Local markdown notes stored entirely inside a workspace SQLite database (`.crab/crab.db`). This allows notebooks to be easily transported, backed up, and versioned as single portable binary files.
+3. **Database-Backed Sandboxes**: Virtual mini-environments saved directly inside the workspace SQLite database. Experiment without cluttering your local drive. Running a sandbox compiles and extracts virtual assets temporarily before execution.
+4. **Customizable Split-Pane Layout**: Side-by-side editing mode. Toggle a split pane inside your main Workspace tab to edit or preview SQLite Markdown Notes, or work on virtual Sandbox files alongside your local physical code.
+5. **Dynamic Root Bootstrap Configuration**: Solve storage constraints by configuring CrabCode to run entirely off an external hard drive. Setting a custom path routes settings, toolchain environments, and scratchpads outside your primary system disk.
 
 ---
 
-## System Architecture & Tech Stack
+## Architectural Layout
 
-CrabCode is built as a local desktop application using:
-* **Backend:** [Wails v2](https://wails.io/) (Go) for secure native filesystem access, OS-dialog integration, and native background process control.
-* **Frontend:** [Svelte 5](https://svelte.dev/) for a highly responsive, lightweight UI.
-* **Editor Engine:** [CodeMirror 6](https://codemirror.net/) configured with custom syntax highlighting, dark mode themes, keymaps, and undo/redo histories.
-
-### How Runtimes are Managed
-* **Go:** Runs directly against the local `go` compiler. Projects can inherit a shared root Go module or `go.work` space.
-* **Python:** Executes code against your default python interpreter.
-* **Node.js:** Resolves package dependencies recursively by walking up to the root folder of your playbook, allowing you to maintain one single parent `node_modules` directory for hundreds of experiments.
-
----
-
-## Limitations & Scope
-
-* **Local Only:** CrabCode runs entirely on your local machine. It does not contain telemetry, cloud-saving mechanics, or remote hosting capabilities. Your data is yours.
-* **Not for Production:** This tool is designed purely as an experimental laboratory and documentation workbook. It is not intended for building, packaging, or deploying production-grade applications.
-
----
-
-## Getting Started
-
-### Prerequisites
-* Go 1.21+
-* Node.js & npm (for frontend building)
-* [Wails CLI](https://wails.io/docs/gettingstarted/installation)
-
-### Running in Development Mode
-To start the application with hot-reloading enabled for both Go and the Svelte frontend, run:
-```bash
-wails dev
 ```
+├── main.go                     # Wails application entry point
+├── app.go                      # Core backend API (Go-Svelte bridge, database, processes)
+└── frontend/
+    ├── src/
+    │   ├── App.svelte          # Reactive Svelte interface & CodeMirror integrations
+    │   ├── FileNode.svelte     # Recursive component for directory tree rendering
+    │   └── main.js             # Frontend bootloader
+    └── wailsjs/                # Auto-generated Go-to-Frontend bindings
+```
+
+### Data Storage Architecture
+
+When you select a physical folder as your active workspace, CrabCode instantiates a hidden directory named `.crab` inside it.
+
+```
+your-project-folder/
+├── .crab/
+│   ├── crab.db                 # SQLite database storing notes, sandboxes, and virtual files
+│   └── temp_sandboxes/         # Temporary cache directories for compilation runs
+├── main.go                     # Your physical project files
+└── package.json
+```
+
+---
+
+## SQLite Database Schema
+
+CrabCode utilizes a pure Go, CGO-free SQLite driver (`modernc.org/sqlite`) to store notes and virtual project assets inside `.crab/crab.db` with the following schema:
+
+```sql
+-- Markdown Notes (Obsidian-Style)
+CREATE TABLE IF NOT EXISTS markdown_notes (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Sandboxes Meta
+CREATE TABLE IF NOT EXISTS sandboxes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    config_yaml TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Sandbox Virtual Filesystem
+CREATE TABLE IF NOT EXISTS sandbox_files (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_dir INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(sandbox_id) REFERENCES sandboxes(id) ON DELETE CASCADE,
+    UNIQUE(sandbox_id, path)
+);
+```
+
+---
+
+## Prerequisites & Installation
+
+To run or build CrabCode from source, ensure your machine satisfies the following conditions:
+
+* **Go**: Version 1.20 or newer
+* **Node.js & npm**: For Svelte frontend compilation
+* **Wails CLI**: Installed via:
+  ```bash
+  go install github.com/wailsapp/wails/v2/cmd/wails@latest
+  ```
+
+### Development Environment Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/crabcode.git
+   cd crabcode
+   ```
+2. **Retrieve Go Dependencies**:
+   ```bash
+   go mod tidy
+   ```
+3. **Run in development mode** (launches hot-reloading window):
+   ```bash
+   wails dev
+   ```
+
+### Building the Application
+
+Compile a production-ready, optimized native binary for your active operating system:
+
+```bash
+wails build
+```
+
+---
+
+## Configuration & Usage
+
+### 1. YAML Configuration for Sandboxes
+
+Each virtual sandbox contains an editable `config_yaml` block that defines how scripts are packaged and executed. Modify this YAML file inside the **Sandboxes** interface:
+
+```yaml
+name: "Data Visualization Experiment"
+environment: "python"
+run_command: "python3 main.py"
+dependencies:
+  - "pandas"
+  - "matplotlib"
+```
+
+* **run_command**: Tells the CrabCode compiler which script or execution engine to trigger when the run button is pressed. This command is executed in the extracted temporary sandbox folder.
+
+### 2. Relocating Root Settings (`.crabcode`) to an External Drive
+
+To migrate configuration files and universal environments to an external hard drive (e.g., to free up primary disk space):
+
+1. Go to the **Settings** tab.
+2. Under **CrabCode System Base Location**, enter or browse to your desired target path on the external drive (e.g., `/Volumes/ExternalDrive/.crabcode` or `D:\.crabcode`).
+3. Save configurations.
+
+#### Bootstrap Mechanics
+CrabCode handles directory routing by maintaining a lightweight pointer file `~/.crabcode_root.txt` inside your system home directory. 
+
+* When CrabCode starts, it reads `~/.crabcode_root.txt` to find the database and active settings directory.
+* If empty or missing, it defaults back to your user home directory (`~/.crabcode`).
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
