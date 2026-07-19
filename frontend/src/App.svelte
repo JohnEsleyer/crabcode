@@ -19,6 +19,7 @@
     CreateSandbox,
     DeleteSandbox,
     SaveSandboxConfig,
+    SaveSandboxNotes,
     GetSandboxFiles,
     SaveSandboxFile,
     DeleteSandboxFile,
@@ -36,7 +37,7 @@
   import {
     FolderOpen, FilePlus, FolderPlus, Play, Square,
     Terminal, FileText, Settings, Database, BookOpen, Plus, Trash2, Columns, Check,
-    HelpCircle
+    HelpCircle, Eye, Layers
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -83,12 +84,22 @@
   let activeSandboxName = $state('');
   let activeSandboxConfig = $state('');
   let lastSavedSandboxConfig = $state('');
+  let activeSandboxMarkdownNote = $state('');
+  let activeSandboxHTMLNote = $state('');
+  let lastSavedSandboxMarkdownNote = $state('');
+  let lastSavedSandboxHTMLNote = $state('');
+
+  let showSandboxExplorer = $state(true);
+  let showSandboxSplit = $state(true);
+  let sandboxSplitType = $state('html');
+  let isSandboxMarkdownEditing = $state(false);
+  let isSandboxHTMLEditing = $state(false);
+
   let sandboxFilesList = $state([]);
   let activeSandboxFilePath = $state('');
   let activeSandboxFileName = $state('');
   let activeSandboxFileContent = $state('');
   let lastSavedSandboxFileContent = $state('');
-  let sandboxTabMode = $state('code');
 
   let settingsCrabRootPath = $state('');
   let isCrabFolderEmpty = $state(false);
@@ -139,6 +150,15 @@
   );
   let activeSandboxConfigUnsaved = $derived(
     activeSandboxId !== '' && activeSandboxConfig !== lastSavedSandboxConfig
+  );
+  let activeSandboxNotesUnsaved = $derived(
+    activeSandboxId !== '' && (
+      activeSandboxMarkdownNote !== lastSavedSandboxMarkdownNote ||
+      activeSandboxHTMLNote !== lastSavedSandboxHTMLNote
+    )
+  );
+  let activeSandboxUnsaved = $derived(
+    activeSandboxFileUnsaved || activeSandboxConfigUnsaved || activeSandboxNotesUnsaved
   );
   let filteredNotes = $derived(
     notesList.filter(n => n.title.toLowerCase().includes(noteSearchQuery.toLowerCase()))
@@ -576,7 +596,12 @@
     activeSandboxName = sandbox.name;
     activeSandboxConfig = sandbox.configYaml;
     lastSavedSandboxConfig = sandbox.configYaml;
-    sandboxTabMode = 'code';
+
+    activeSandboxMarkdownNote = sandbox.markdownNote || '';
+    activeSandboxHTMLNote = sandbox.htmlNote || '';
+    lastSavedSandboxMarkdownNote = sandbox.markdownNote || '';
+    lastSavedSandboxHTMLNote = sandbox.htmlNote || '';
+
     await loadSandboxFiles();
   }
 
@@ -645,18 +670,30 @@
   async function handleSaveSandbox() {
     if (!activeSandboxId) return;
     try {
-      if (sandboxTabMode === 'yaml') {
-        await SaveSandboxConfig(activeSandboxId, activeSandboxConfig);
-        lastSavedSandboxConfig = activeSandboxConfig;
-        const index = sandboxesList.findIndex(s => s.id === activeSandboxId);
-        if (index !== -1) {
-          sandboxesList[index].configYaml = activeSandboxConfig;
-        }
-      } else if (activeSandboxFilePath) {
+      if (activeSandboxFilePath && activeSandboxFileUnsaved) {
         await SaveSandboxFile(activeSandboxId, activeSandboxFilePath, activeSandboxFileContent, false);
         lastSavedSandboxFileContent = activeSandboxFileContent;
         await loadSandboxFiles();
       }
+
+      if (activeSandboxConfigUnsaved) {
+        await SaveSandboxConfig(activeSandboxId, activeSandboxConfig);
+        lastSavedSandboxConfig = activeSandboxConfig;
+        const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
+        if (si !== -1) sandboxesList[si].configYaml = activeSandboxConfig;
+      }
+
+      if (activeSandboxNotesUnsaved) {
+        await SaveSandboxNotes(activeSandboxId, activeSandboxMarkdownNote, activeSandboxHTMLNote);
+        lastSavedSandboxMarkdownNote = activeSandboxMarkdownNote;
+        lastSavedSandboxHTMLNote = activeSandboxHTMLNote;
+        const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
+        if (si !== -1) {
+          sandboxesList[si].markdownNote = activeSandboxMarkdownNote;
+          sandboxesList[si].htmlNote = activeSandboxHTMLNote;
+        }
+      }
+
       addToast('Sandbox saved', 'success');
     } catch (err) {
       addToast(String(err), 'error');
@@ -678,6 +715,10 @@
         activeSandboxFileName = '';
         activeSandboxFileContent = '';
         lastSavedSandboxFileContent = '';
+        activeSandboxMarkdownNote = '';
+        activeSandboxHTMLNote = '';
+        lastSavedSandboxMarkdownNote = '';
+        lastSavedSandboxHTMLNote = '';
       }
       addToast('Sandbox deleted', 'success');
     } catch (err) {
@@ -1426,25 +1467,21 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
               <div class="sandbox-actions">
                 <button
                   class="action-btn"
-                  onclick={() => showGuideModal = true}
-                  title="Sandbox Guide"
+                  class:active={showSandboxExplorer}
+                  onclick={() => showSandboxExplorer = !showSandboxExplorer}
+                  title="Toggle Virtual Files Sidebar"
                 >
-                  <HelpCircle size={13} />
-                  <span>Help</span>
+                  <Columns size={13} />
+                  <span>{showSandboxExplorer ? "Hide Files" : "Files"}</span>
                 </button>
                 <button
                   class="action-btn"
-                  class:active={sandboxTabMode === 'code'}
-                  onclick={() => sandboxTabMode = 'code'}
+                  class:active={showSandboxSplit}
+                  onclick={() => showSandboxSplit = !showSandboxSplit}
+                  title="Toggle Notes Split Pane"
                 >
-                  Code
-                </button>
-                <button
-                  class="action-btn"
-                  class:active={sandboxTabMode === 'yaml'}
-                  onclick={() => sandboxTabMode = 'yaml'}
-                >
-                  YAML Config
+                  <FileText size={13} />
+                  <span>{showSandboxSplit ? "Hide Notes" : "Notes"}</span>
                 </button>
                 {#if !isRunning}
                   <button class="action-btn run" onclick={runActiveCode}>
@@ -1457,71 +1494,174 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                     <span>Stop</span>
                   </button>
                 {/if}
-                <button class="action-btn primary" onclick={handleSaveSandbox}>
+                <button class="action-btn primary" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved}>
                   Save
                 </button>
               </div>
             </div>
 
             <div class="sandbox-working-split">
-              {#if sandboxTabMode === 'code'}
-                <div class="sandbox-virtual-explorer">
-                  <div class="v-explorer-header">
-                    <span>Virtual Files</span>
-                    <button class="v-explorer-btn" onclick={handleCreateSandboxFile} title="Add file">
-                      <Plus size={12} />
-                    </button>
+              <div class="sandbox-main-area" style="flex: 1; display: flex; overflow: hidden; min-width: 0;">
+                {#if showSandboxExplorer}
+                  <div class="sandbox-virtual-explorer">
+                    <div class="v-explorer-header">
+                      <span>Virtual Files</span>
+                      <button class="v-explorer-btn" onclick={handleCreateSandboxFile} title="Add file">
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                    <div class="virtual-files-list">
+                      {#each sandboxFilesList as vFile (vFile.path)}
+                        <div class="v-file-row-wrap">
+                          <button
+                            class="v-file-row"
+                            class:active={activeSandboxFilePath === vFile.path}
+                            onclick={() => selectSandboxFile(vFile)}
+                          >
+                            <span>{vFile.path}</span>
+                          </button>
+                          <button
+                            class="v-file-delete"
+                            onclick={() => handleDeleteSandboxFile(vFile.path)}
+                            title="Delete file"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
                   </div>
-                  <div class="virtual-files-list">
-                    {#each sandboxFilesList as vFile (vFile.path)}
-                      <div class="v-file-row-wrap">
-                        <button
-                          class="v-file-row"
-                          class:active={activeSandboxFilePath === vFile.path}
-                          onclick={() => selectSandboxFile(vFile)}
-                        >
-                          <span>{vFile.path}</span>
-                        </button>
-                        <button
-                          class="v-file-delete"
-                          onclick={() => handleDeleteSandboxFile(vFile.path)}
-                          title="Delete file"
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
+                {/if}
 
-              <div class="sandbox-editor-wrapper">
-                {#if sandboxTabMode === 'code'}
+                <div class="sandbox-editor-wrapper">
                   {#if activeSandboxFilePath}
                     <div class="sandbox-cm-container full" bind:this={sandboxEditorContainer}></div>
                   {:else}
                     <div class="split-empty">No virtual file selected.</div>
                   {/if}
-                {:else}
-                  <div class="yaml-config-panel">
-                    <div class="yaml-config-header">
-                      <h3>Environment Config (YAML)</h3>
-                      <p>
-                        Define sandbox execution rules. Set <code>run_command</code> to control how
-                        files are compiled and executed from the temp extraction directory.
-                      </p>
+                </div>
+              </div>
+
+              {#if showSandboxSplit}
+                <div class="sandbox-notes-pane">
+                  <div class="sandbox-notes-header">
+                    <div class="tabs">
+                      <button
+                        class="notes-tab-btn"
+                        class:active={sandboxSplitType === 'markdown'}
+                        onclick={() => sandboxSplitType = 'markdown'}
+                      >
+                        Markdown Note
+                      </button>
+                      <button
+                        class="notes-tab-btn"
+                        class:active={sandboxSplitType === 'html'}
+                        onclick={() => sandboxSplitType = 'html'}
+                      >
+                        HTML Canvas
+                      </button>
+                      <button
+                        class="notes-tab-btn"
+                        class:active={sandboxSplitType === 'yaml'}
+                        onclick={() => sandboxSplitType = 'yaml'}
+                      >
+                        YAML Config
+                      </button>
                     </div>
-                    <textarea
-                      class="yaml-textarea"
-                      bind:value={activeSandboxConfig}
-                      placeholder={'name: "My Sandbox"\nenvironment: "python"\nrun_command: "python3 main.py"'}
-                    ></textarea>
-                    {#if activeSandboxConfigUnsaved}
-                      <p class="yaml-unsaved-hint">Config has unsaved changes.</p>
+                  </div>
+
+                  <div class="sandbox-notes-body">
+                    {#if sandboxSplitType === 'markdown'}
+                      <div class="split-pane-wrapper">
+                        <div class="pane-action-row">
+                          <span class="pane-title">MD Documentation</span>
+                          <button
+                            class="split-btn"
+                            onclick={() => isSandboxMarkdownEditing = !isSandboxMarkdownEditing}
+                          >
+                            {isSandboxMarkdownEditing ? 'Preview' : 'Edit'}
+                          </button>
+                        </div>
+                        {#if isSandboxMarkdownEditing}
+                          <textarea
+                            class="notes-raw-textarea"
+                            bind:value={activeSandboxMarkdownNote}
+                            placeholder="State the purpose, requirements, and principles of your dynamic experiment..."
+                          ></textarea>
+                        {:else}
+                          <div class="markdown-rendered-view text-view-box">
+                            {#each activeSandboxMarkdownNote.split('\n') as line}
+                              {@const part = renderMarkdownLine(line)}
+                              {#if part.type === 'h1'}
+                                <h1>{part.text}</h1>
+                              {:else if part.type === 'h2'}
+                                <h2>{part.text}</h2>
+                              {:else if part.type === 'li'}
+                                <li>{part.text}</li>
+                              {:else if part.type === 'br'}
+                                <br />
+                              {:else}
+                                <p>{part.text}</p>
+                              {/if}
+                            {/each}
+                            {#if !activeSandboxMarkdownNote}
+                              <p class="empty-notif">No documentation note supplied yet.</p>
+                            {/if}
+                          </div>
+                        {/if}
+                      </div>
+
+                    {:else if sandboxSplitType === 'html'}
+                      <div class="split-pane-wrapper">
+                        <div class="pane-action-row">
+                          <span class="pane-title">Dynamic Interactive Visuals</span>
+                          <button
+                            class="split-btn"
+                            onclick={() => isSandboxHTMLEditing = !isSandboxHTMLEditing}
+                          >
+                            {isSandboxHTMLEditing ? 'View Live' : 'Edit HTML'}
+                          </button>
+                        </div>
+                        {#if isSandboxHTMLEditing}
+                          <textarea
+                            class="notes-raw-textarea code-family"
+                            bind:value={activeSandboxHTMLNote}
+                            placeholder="Insert custom HTML code, CSS stylesheet setups, or Javascript drawing loops..."
+                          ></textarea>
+                        {:else}
+                          <div class="html-preview-frame-container">
+                            <iframe
+                              title="Concept Interactive Visualization Frame"
+                              srcdoc={activeSandboxHTMLNote}
+                              sandbox="allow-scripts"
+                              class="html-canvas-iframe"
+                            ></iframe>
+                          </div>
+                        {/if}
+                      </div>
+
+                    {:else if sandboxSplitType === 'yaml'}
+                      <div class="yaml-config-panel">
+                        <div class="yaml-config-header">
+                          <h3>Environment Config (YAML)</h3>
+                          <p>
+                            Define sandbox execution rules. Set <code>run_command</code> to control how
+                            files are compiled and executed from the temp extraction directory.
+                          </p>
+                        </div>
+                        <textarea
+                          class="yaml-textarea"
+                          bind:value={activeSandboxConfig}
+                          placeholder={'name: "My Sandbox"\nenvironment: "python"\nrun_command: "python3 main.py"'}
+                        ></textarea>
+                        {#if activeSandboxConfigUnsaved}
+                          <p class="yaml-unsaved-hint">Config has unsaved changes.</p>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
-                {/if}
-              </div>
+                </div>
+              {/if}
             </div>
 
             {#if isConsoleOpen}
@@ -2482,6 +2622,143 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     overflow: hidden;
     background-color: #14141a;
     min-width: 0;
+  }
+
+  .sandbox-notes-pane {
+    width: 440px;
+    min-width: 320px;
+    max-width: 600px;
+    border-left: 1px solid #1a1a24;
+    background-color: #0c0c12;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sandbox-notes-header {
+    height: 38px;
+    padding: 0 12px;
+    background-color: #0a0a0f;
+    border-bottom: 1px solid #1a1a24;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .sandbox-notes-header .tabs {
+    display: flex;
+    gap: 4px;
+  }
+
+  .notes-tab-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: #718096;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.15s, background-color 0.15s;
+  }
+
+  .notes-tab-btn:hover {
+    color: #edf2f7;
+    background-color: #1a1a24;
+  }
+
+  .notes-tab-btn.active {
+    color: #ff5a36;
+    background-color: #ff5a3614;
+    border-color: #ff5a3633;
+  }
+
+  .sandbox-notes-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: #14141a;
+  }
+
+  .split-pane-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .pane-action-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .pane-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .notes-raw-textarea {
+    flex: 1;
+    background-color: #0c0c12;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    padding: 12px;
+    color: #edf2f7;
+    font-family: inherit;
+    font-size: 13px;
+    resize: none;
+    outline: none;
+    line-height: 1.5;
+  }
+
+  .notes-raw-textarea.code-family {
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+  }
+
+  .notes-raw-textarea:focus {
+    border-color: #ff5a36;
+  }
+
+  .text-view-box {
+    flex: 1;
+    border: 1px solid #1a1a24;
+    background-color: #0c0c12;
+    border-radius: 6px;
+    overflow-y: auto;
+  }
+
+  .empty-notif {
+    color: #4a5568;
+    font-style: italic;
+    text-align: center;
+    margin-top: 40px;
+    font-size: 13px;
+  }
+
+  .html-preview-frame-container {
+    flex: 1;
+    border: 1px solid #1a1a24;
+    background-color: #0c0c12;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .html-canvas-iframe {
+    flex: 1;
+    border: none;
+    width: 100%;
+    height: 100%;
+    background: #0c0c12;
   }
 
   .yaml-config-panel {

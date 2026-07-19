@@ -60,6 +60,8 @@ export function SaveSandboxConfig(arg1:string,arg2:string):Promise<void>;
 
 export function SaveSandboxFile(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 
+export function SaveSandboxNotes(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function SelectFolder():Promise<string>;
 
 export function StopCommand(arg1:string):Promise<void>;

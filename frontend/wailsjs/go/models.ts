@@ -54,6 +54,8 @@ export namespace main {
 	    id: string;
 	    name: string;
 	    configYaml: string;
+	    markdownNote: string;
+	    htmlNote: string;
 	    createdAt: string;
 	    updatedAt: string;
 	
@@ -66,6 +68,8 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.configYaml = source["configYaml"];
+	        this.markdownNote = source["markdownNote"];
+	        this.htmlNote = source["htmlNote"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }

@@ -38,11 +38,13 @@ type Note struct {
 }
 
 type Sandbox struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	ConfigYAML string `json:"configYaml"`
-	CreatedAt  string `json:"createdAt"`
-	UpdatedAt  string `json:"updatedAt"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ConfigYAML   string `json:"configYaml"`
+	MarkdownNote string `json:"markdownNote"`
+	HTMLNote     string `json:"htmlNote"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
 }
 
 type SandboxFile struct {
@@ -364,6 +366,11 @@ func (a *App) migrate() error {
 			return err
 		}
 	}
+
+	// Dynamic column updates for attached Sandbox notes and interactive canvases
+	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN markdown_note TEXT NOT NULL DEFAULT ''")
+	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN html_note TEXT NOT NULL DEFAULT ''")
+
 	return nil
 }
 
@@ -446,7 +453,7 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 		return nil, errors.New("database not initialized")
 	}
 
-	rows, err := a.db.Query("SELECT id, name, config_yaml, created_at, updated_at FROM sandboxes ORDER BY updated_at DESC")
+	rows, err := a.db.Query("SELECT id, name, config_yaml, markdown_note, html_note, created_at, updated_at FROM sandboxes ORDER BY updated_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +462,7 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 	var sandboxes []Sandbox
 	for rows.Next() {
 		var s Sandbox
-		if err := rows.Scan(&s.ID, &s.Name, &s.ConfigYAML, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.ConfigYAML, &s.MarkdownNote, &s.HTMLNote, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sandboxes = append(sandboxes, s)
@@ -475,6 +482,8 @@ func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) 
 		configYaml   string
 		mainFileName string
 		mainContent  string
+		markdownNote string
+		htmlNote     string
 	}
 
 	templates := map[string]templateConfig{
@@ -482,41 +491,57 @@ func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) 
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"python\"\nrun_command: \"python3 main.py\"\n", name),
 			mainFileName: "main.py",
 			mainContent:  "# Python Sandbox\nprint('Hello from CrabCode Python Sandbox!')\n",
+			markdownNote: "# Python Sandbox Experiment\n\nUse this playground to research algorithms, run diagnostics, or visualize operations.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.card { border: 1px solid #ff5a3633; display: inline-block; padding: 24px; border-radius: 8px; background: #14141a; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }\n.badge { display: inline-block; background: #ff5a36; color: white; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 14px; margin-bottom: 12px; }\n</style>\n</head>\n<body>\n  <div class='card'>\n    <div class='badge'>\U0001f40d Python Sandbox Active</div>\n    <p>Double-click files in the explorer to get started.</p>\n  </div>\n</body>\n</html>",
 		},
 		"go": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"go\"\nrun_command: \"go run main.go\"\n", name),
 			mainFileName: "main.go",
 			mainContent:  "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from CrabCode Go Sandbox!\")\n}\n",
+			markdownNote: "# Go Sandbox Experiment\n\nWrite fast, concurrent system components inside this SQLite environment.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.spin-container { display: inline-block; animation: spin 5s linear infinite; margin: 20px 0; font-size: 36px; }\n@keyframes spin { 100% { transform: rotate(360deg); } }\n</style>\n</head>\n<body>\n  <div class='spin-container'>\U0001f439</div>\n  <h3 style='color:#00ADD8;'>Go Compiler Environment Active</h3>\n</body>\n</html>",
 		},
 		"rust": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"rust\"\nrun_command: \"rustc main.rs && ./main\"\n", name),
 			mainFileName: "main.rs",
 			mainContent:  "fn main() {\n    println!(\"Hello from CrabCode Rust Sandbox!\");\n}\n",
+			markdownNote: "# Rust Sandbox Experiment\n\nValidate memory management rules, traits, and complex data models safely.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.gear { font-size: 40px; display: inline-block; animation: pulse 2s infinite; color: #DEA584; }\n@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }\n</style>\n</head>\n<body>\n  <div class='gear'>\u2699\ufe0f</div>\n  <h3 style='color: #DEA584;'>Rust Core Active</h3>\n</body>\n</html>",
 		},
 		"java": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"java\"\nrun_command: \"java Main.java\"\n", name),
 			mainFileName: "Main.java",
 			mainContent:  "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from CrabCode Java Sandbox!\");\n    }\n}\n",
+			markdownNote: "# Java Sandbox Experiment\n\nPerfect for object-oriented prototypes and class tests.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.cup { font-size: 45px; display: inline-block; animation: float 3s ease-in-out infinite; }\n@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }\n</style>\n</head>\n<body>\n  <div class='cup'>\u2615</div>\n  <h3 style='color:#B07219;'>Java VM Ready</h3>\n</body>\n</html>",
 		},
 		"javascript": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"node index.js\"\n", name),
 			mainFileName: "index.js",
 			mainContent:  "// JavaScript Sandbox\nconsole.log('Hello from CrabCode JavaScript Sandbox!');\n",
+			markdownNote: "# JavaScript Sandbox Experiment\n\nBuild script solutions or test lightweight async execution patterns here.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.js-box { display: inline-block; background: #F7DF1E; color: black; font-weight: bold; padding: 12px 24px; border-radius: 4px; font-size: 18px; margin: 15px 0; }\n</style>\n</head>\n<body>\n  <div class='js-box'>JS</div>\n  <h3>Node.js Environment Ready</h3>\n</body>\n</html>",
 		},
 		"typescript": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"npx tsx index.ts\"\n", name),
 			mainFileName: "index.ts",
 			mainContent:  "// TypeScript Sandbox\nconst greeting: string = 'Hello from CrabCode TypeScript Sandbox!';\nconsole.log(greeting);\n",
+			markdownNote: "# TypeScript Sandbox Experiment\n\nTry complex typing rules, design structures, or execute Node.js TypeScript programs.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.ts-badge { display: inline-block; background: #3178C6; color: white; font-weight: bold; padding: 8px 16px; border-radius: 4px; }\n</style>\n</head>\n<body>\n  <div class='ts-badge'>TS</div>\n  <h3>TypeScript Environment Ready</h3>\n</body>\n</html>",
 		},
 		"dart": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"dart\"\nrun_command: \"dart run main.dart\"\n", name),
 			mainFileName: "main.dart",
 			mainContent:  "// Dart Sandbox\nvoid main() {\n  print('Hello from CrabCode Dart Sandbox!');\n}\n",
+			markdownNote: "# Dart Sandbox Experiment\n\nRun application workflows or asynchronous streams within the Dart environment.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.dart-target { font-size: 40px; animation: bounce 2s infinite; }\n@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }\n</style>\n</head>\n<body>\n  <div class='dart-target'>\U0001f3af</div>\n  <h3 style='color:#00B4AB;'>Dart Environment Active</h3>\n</body>\n</html>",
 		},
 		"cpp": {
 			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"cpp\"\nrun_command: \"g++ main.cpp -o main && ./main\"\n", name),
 			mainFileName: "main.cpp",
 			mainContent:  "#include <iostream>\n\nint main() {\n    std::cout << \"Hello from CrabCode C++ Sandbox!\" << std::endl;\n    return 0;\n}\n",
+			markdownNote: "# C++ Sandbox Experiment\n\nEvaluate memory optimization structures, algorithmic benchmarks, or library implementations.",
+			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.cpp-badge { font-family: monospace; border: 1px solid #00599C; padding: 8px 16px; border-radius: 4px; color: #00599C; display: inline-block; font-weight: bold; }\n</style>\n</head>\n<body>\n  <div class='cpp-badge'>C++</div>\n  <h3>Native compiler systems active</h3>\n</body>\n</html>",
 		},
 	}
 
@@ -528,8 +553,8 @@ func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) 
 	configYaml := tmpl.configYaml
 
 	_, err := a.db.Exec(
-		"INSERT INTO sandboxes (id, name, config_yaml, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		id, name, configYaml, now, now,
+		"INSERT INTO sandboxes (id, name, config_yaml, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		id, name, configYaml, tmpl.markdownNote, tmpl.htmlNote, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -538,11 +563,13 @@ func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) 
 	_ = a.SaveSandboxFile(id, tmpl.mainFileName, tmpl.mainContent, false)
 
 	return &Sandbox{
-		ID:         id,
-		Name:       name,
-		ConfigYAML: configYaml,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:           id,
+		Name:         name,
+		ConfigYAML:   configYaml,
+		MarkdownNote: tmpl.markdownNote,
+		HTMLNote:     tmpl.htmlNote,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}, nil
 }
 
@@ -565,6 +592,16 @@ func (a *App) SaveSandboxConfig(id string, configYaml string) error {
 
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET config_yaml = ?, updated_at = ? WHERE id = ?", configYaml, now, id)
+	return err
+}
+
+func (a *App) SaveSandboxNotes(id string, markdownNote string, htmlNote string) error {
+	if a.db == nil {
+		return errors.New("database not initialized")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	_, err := a.db.Exec("UPDATE sandboxes SET markdown_note = ?, html_note = ?, updated_at = ? WHERE id = ?", markdownNote, htmlNote, now, id)
 	return err
 }
 
