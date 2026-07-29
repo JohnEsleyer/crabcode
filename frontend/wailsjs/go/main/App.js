@@ -62,8 +62,20 @@ export function GetSandboxes() {
   return window['go']['main']['App']['GetSandboxes']();
 }
 
+export function GetTemplates() {
+  return window['go']['main']['App']['GetTemplates']();
+}
+
+export function GetTemplatesDirectory() {
+  return window['go']['main']['App']['GetTemplatesDirectory']();
+}
+
 export function InitPlayground() {
   return window['go']['main']['App']['InitPlayground']();
+}
+
+export function InitTemplates() {
+  return window['go']['main']['App']['InitTemplates']();
 }
 
 export function InitializeCrabFolder(arg1) {
@@ -90,8 +102,16 @@ export function RenamePath(arg1, arg2) {
   return window['go']['main']['App']['RenamePath'](arg1, arg2);
 }
 
+export function RenameSandbox(arg1, arg2) {
+  return window['go']['main']['App']['RenameSandbox'](arg1, arg2);
+}
+
 export function RunCommand(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['RunCommand'](arg1, arg2, arg3, arg4);
+}
+
+export function RunCommandWithEnv(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RunCommandWithEnv'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function RunSandbox(arg1, arg2) {

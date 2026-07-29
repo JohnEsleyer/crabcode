@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CrabCode Data Storage & Runtime Architecture</title>
+  <style>
+    :root {
+      --bg-main: #0b0b0f;
+      --bg-card: #0c0c12;
+      --bg-panel: #14141a;
+      --bg-hover: #1a1a24;
+      --border-color: #1f1f2e;
+      --border-accent: #ff5a3633;
+      --accent: #ff5a36;
+      --accent-glow: rgba(255, 90, 54, 0.25);
+      --green: #48bb78;
+      --blue: #00add8;
+      --purple: #9f7aea;
+      --yellow: #f7df1e;
+      --text-main: #edf2f7;
+      --text-muted: #a0aec0;
+      --text-dim: #6b7280;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    .badge {
+      display: inline-block;
+      background: rgba(255, 90, 54, 0.12);
+      color: var(--accent);
+      border: 1px solid var(--border-accent);
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: 36px;
+      font-weight: 800;
+      color: var(--text-main);
+      margin-bottom: 12px;
+    }
+
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 16px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    /* Grid Layout */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    @media (max-width: 860px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    /* Card */
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 24px;
+      height: 100%;
+    }
+
+    .card h3 {
+      font-size: 18px;
+      color: var(--text-main);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card h3 .icon {
+      color: var(--accent);
+    }
+
+    .card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    /* Folder Tree Diagram */
+    .folder-tree {
+      background-color: #08080c;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: #cbd5e0;
+      line-height: 1.7;
+    }
+
+    .folder-tree .dir { color: var(--blue); font-weight: 600; }
+    .folder-tree .file { color: #edf2f7; }
+    .folder-tree .db { color: var(--yellow); font-weight: 600; }
+    .folder-tree .comment { color: var(--text-dim); font-style: italic; }
+
+    /* Tables Schema */
+    .schema-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    .schema-table th, .schema-table td {
+      border: 1px solid var(--border-color);
+      padding: 8px 12px;
+      text-align: left;
+    }
+
+    .schema-table th {
+      background-color: var(--bg-panel);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .schema-table td.col-name {
+      font-family: var(--font-mono);
+      color: var(--blue);
+    }
+
+    .schema-table td.col-type {
+      font-family: var(--font-mono);
+      color: var(--yellow);
+    }
+
+    /* Runtime Specs */
+    .tech-pill-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tech-pill {
+      background-color: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tech-pill.go { border-color: rgba(0, 173, 216, 0.4); color: var(--blue); }
+    .tech-pill.wails { border-color: rgba(255, 90, 54, 0.4); color: var(--accent); }
+    .tech-pill.svelte { border-color: rgba(255, 62, 0, 0.4); color: #ff3e00; }
+    .tech-pill.sqlite { border-color: rgba(247, 223, 30, 0.4); color: var(--yellow); }
+
+    /* Code Box */
+    pre.code-box {
+      background-color: #08080c;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #cbd5e0;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <span class="badge">Architecture & Storage Blueprint</span>
+      <h1>Data Storage, Runtime & Dependencies</h1>
+      <p class="subtitle">
+        A complete breakdown of where CrabCode persists data, its underlying runtime engines, directory structures, and dependency management mechanics.
+      </p>
+    </header>
+
+    <!-- ROW 1: STORAGE LOCATIONS & FOLDER STRUCTURE -->
+    <div class="grid-2">
+      <!-- Folder Structure -->
+      <div class="card">
+        <h3><span class="icon">📁</span> System & Project Storage Folders</h3>
+        <p>CrabCode isolates global settings and scratchpads from project-specific virtual databases.</p>
+        
+        <div class="folder-tree">
+          <div><span class="dir">~/.crabcode/</span> <span class="comment">(Default System Root — all data lives here)</span></div>
+          <div>├── <span class="file">settings.json</span> <span class="comment">(Root & environment paths)</span></div>
+          <div>├── <span class="db">crabcode.db</span> <span class="comment">(Global SQLite: Notes & Sandboxes)</span></div>
+          <div>├── <span class="dir">templates/</span> <span class="comment">(Dynamic IaC .yaml template files)</span></div>
+          <div>│   ├── <span class="file">python.yaml</span>, <span class="file">go.yaml</span>, <span class="file">rust.yaml</span></div>
+          <div>│   └── <span class="file">sql.yaml</span>, <span class="file">surrealdb.yaml</span>, <span class="file">javascript.yaml</span></div>
+          <div>├── <span class="dir">sandboxes/</span> <span class="comment">(Persisted sandbox files on disk)</span></div>
+          <div>│   └── <span class="dir">&lt;sandbox_id&gt;/</span></div>
+          <div>│       ├── <span class="file">config.yaml</span></div>
+          <div>│       ├── <span class="file">main.py</span></div>
+          <div>│       └── ...</div>
+          <div>├── <span class="dir">environments/</span> <span class="comment">(Universal package toolchains)</span></div>
+          <div>├── <span class="dir">temp_sandboxes/</span> <span class="comment">(Extracted runtime execution folder)</span></div>
+          <div>│   └── <span class="dir">&lt;sandbox_id&gt;/</span></div>
+          <div>└── <span class="dir">playground/</span> <span class="comment">(Global code scratchpads)</span></div>
+          <div>    ├── <span class="file">scratch.py</span>, <span class="file">scratch.js</span>, <span class="file">scratch.go</span></div>
+          <div>    └── <span class="file">scratch.rs</span>, <span class="file">scratch.sql</span>, <span class="file">scratch.dart</span></div>
+          <br>
+          <div><span class="dir">&lt;YourProjectFolder&gt;/</span> <span class="comment">(Workspace Root — stays 100% clean)</span></div>
+          <div><span class="comment">(No .crab/ folder — all sandbox data stays in ~/.crabcode/)</span></div>
+        </div>
+      </div>
+
+      <!-- Root Bootstrap Mechanism -->
+      <div class="card">
+        <h3><span class="icon">🎯</span> Custom Root Directory Bootstrap</h3>
+        <p>You can move the CrabCode system data folder to an external drive or custom path via Settings.</p>
+        
+        <pre class="code-box">
+<span style="color: var(--text-dim)">// Bootstrap file location:</span>
+~/.crabcode_root.txt
+
+<span style="color: var(--text-dim)">// How CrabCode resolves the storage root at runtime (app.go):</span>
+1. Check if ~/.crabcode_root.txt exists.
+2. Read custom path string from file.
+3. If empty or missing, fallback to ~/.crabcode
+4. Ensure universal env dir exists: &lt;RootPath&gt;/environments
+
+<span style="color: var(--text-dim)">// When saving a new custom path in Settings:</span>
+1. If old root exists and differs from new root,
+   entire ~/.crabcode directory is COPIED to
+   the new location via copyDir().
+2. Old root is removed after successful copy.
+3. ~/.crabcode_root.txt is updated.
+4. Global DB connection is re-initialized at new path.
+        </pre>
+      </div>
+    </div>
+
+    <!-- ROW 2: SQLITE DATABASE SCHEMA -->
+    <div class="card" style="margin-bottom: 32px;">
+      <h3><span class="icon">💾</span> SQLite Database Schema (<CrabRoot>/crabcode.db)</h3>
+      <p>CrabCode uses embedded pure Go SQLite (<code>modernc.org/sqlite</code>) without CGO dependencies. The database is stored centrally inside your system base location (<code>~/.crabcode/crabcode.db</code>), not inside the workspace folder — keeping your project source tree 100% clean.</p>
+
+      <div class="grid-2" style="margin-top: 16px;">
+        <!-- Notes Table -->
+        <div>
+          <h4 style="color: var(--yellow); font-size: 14px; margin-bottom: 8px;">1. Table: markdown_notes</h4>
+          <table class="schema-table">
+            <thead>
+              <tr><th>Column</th><th>Type</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">id</td><td class="col-type">TEXT PK</td><td>Unix nanosecond timestamp string</td></tr>
+              <tr><td class="col-name">title</td><td class="col-type">TEXT</td><td>Note title</td></tr>
+              <tr><td class="col-name">content</td><td class="col-type">TEXT</td><td>Raw Markdown text</td></tr>
+              <tr><td class="col-name">created_at</td><td class="col-type">TEXT</td><td>RFC3339 timestamp</td></tr>
+              <tr><td class="col-name">updated_at</td><td class="col-type">TEXT</td><td>RFC3339 timestamp</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Sandboxes Table -->
+        <div>
+          <h4 style="color: var(--blue); font-size: 14px; margin-bottom: 8px;">2. Table: sandboxes & sandbox_files</h4>
+          <table class="schema-table">
+            <thead>
+              <tr><th>Column</th><th>Type</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">id</td><td class="col-type">TEXT PK</td><td>Sandbox unique identifier</td></tr>
+              <tr><td class="col-name">config_yaml</td><td class="col-type">TEXT</td><td>YAML rules (run_command, env)</td></tr>
+              <tr><td class="col-name">markdown_note</td><td class="col-type">TEXT</td><td>Embedded documentation note</td></tr>
+              <tr><td class="col-name">html_note</td><td class="col-type">TEXT</td><td>Interactive HTML visual canvas</td></tr>
+              <tr><td class="col-name">sandbox_files</td><td class="col-type">TABLE</td><td>Virtual file path & contents mapping</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 3: RUNTIME & DEPENDENCY MANAGEMENT -->
+    <div class="grid-2">
+      <!-- Runtime Stack -->
+      <div class="card">
+        <h3><span class="icon">⚡</span> Application Runtime Stack</h3>
+        <p>CrabCode runs as a native cross-platform desktop binary with multi-threaded Go process management.</p>
+
+        <div class="tech-pill-container">
+          <span class="tech-pill wails">Wails v2 Desktop Bridge</span>
+          <span class="tech-pill go">Go 1.21 Backend</span>
+          <span class="tech-pill svelte">Svelte 5 UI</span>
+          <span class="tech-pill sqlite">modernc.org/sqlite (Pure Go)</span>
+        </div>
+
+        <ul style="margin-top: 16px; padding-left: 20px; font-size: 13px; color: var(--text-muted);">
+          <li><strong>Go Backend:</strong> Manages file system operations, SQLite connection lifecycle, and asynchronous command execution loops.</li>
+          <li><strong>IaC Execution Engine:</strong> The <code>RunSandbox</code> method parses the declarative YAML and executes a 4-phase lifecycle: <strong>Setup</strong> (env preparation) → <strong>Extract</strong> (virtual files to disk) → <strong>Build</strong> (compilation) → <strong>Run</strong> (execution with env vars).</li>
+          <li><strong>Dynamic Template Scanner:</strong> <code>GetTemplates()</code> reads all <code>.yaml</code> files from <code>&lt;CrabRoot&gt;/templates/</code> at runtime. No hardcoded template registry.</li>
+          <li><strong>Process Streaming:</strong> Processes (<code>os/exec</code>) stdout/stderr pipes line-by-line and emits Wails runtime events (<code>terminal_output</code>) to the UI console in real time.</li>
+        </ul>
+      </div>
+
+      <!-- Dependency Management -->
+      <div class="card">
+        <h3><span class="icon">📦</span> Dependency & Toolchain Management</h3>
+        <p>How CrabCode handles execution dependencies across workspace files and sandboxes:</p>
+
+        <ul style="margin-top: 12px; padding-left: 20px; font-size: 13px; color: var(--text-muted); line-height: 1.8;">
+          <li><strong>Host Toolchain Integration:</strong> CrabCode executes runners directly using host binaries (e.g. <code>python3</code>, <code>node</code>, <code>go</code>, <code>rustc</code>, <code>sqlite3</code>, <code>java</code>, <code>dart</code>, <code>g++</code>).</li>
+          <li><strong>Universal Env Directory:</strong> Stored inside <code>&lt;CrabRoot&gt;/environments</code> for isolated toolchains or local package caches.</li>
+          <li><strong>IaC Setup Phase:</strong> The <code>setup</code> block in a sandbox YAML runs steps inside <code>&lt;CrabRoot&gt;/environments/&lt;name&gt;/</code> before execution.</li>
+          <li><strong>Dynamic Templates:</strong> All sandbox templates live as <code>.yaml</code> files under <code>&lt;CrabRoot&gt;/templates/</code>. New templates are detected at runtime — no recompilation needed.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

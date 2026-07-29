@@ -32,7 +32,13 @@ export function GetSandboxFiles(arg1:string):Promise<Array<main.SandboxFile>>;
 
 export function GetSandboxes():Promise<Array<main.Sandbox>>;
 
+export function GetTemplates():Promise<Array<main.TemplateSpec>>;
+
+export function GetTemplatesDirectory():Promise<string>;
+
 export function InitPlayground():Promise<void>;
+
+export function InitTemplates():Promise<void>;
 
 export function InitializeCrabFolder(arg1:string):Promise<void>;
 
@@ -46,7 +52,11 @@ export function ReadFile(arg1:string):Promise<string>;
 
 export function RenamePath(arg1:string,arg2:string):Promise<void>;
 
+export function RenameSandbox(arg1:string,arg2:string):Promise<void>;
+
 export function RunCommand(arg1:string,arg2:string,arg3:Array<string>,arg4:string):Promise<void>;
+
+export function RunCommandWithEnv(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:Record<string, string>):Promise<void>;
 
 export function RunSandbox(arg1:string,arg2:string):Promise<string>;
 

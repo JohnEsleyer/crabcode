@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	_ "modernc.org/sqlite"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -26,6 +28,55 @@ type App struct {
 	processMutex    sync.Mutex
 	workspacePath   string
 	db              *sql.DB
+}
+
+// Declarative Infrastructure-as-Code Spec Structs
+type SetupStep struct {
+	Name    string `json:"name" yaml:"name"`
+	Command string `json:"command" yaml:"command"`
+	Dir     string `json:"dir" yaml:"dir"`
+}
+
+type TemplateFile struct {
+	Path    string `json:"path" yaml:"path"`
+	Content string `json:"content" yaml:"content"`
+	IsDir   bool   `json:"isDir" yaml:"is_dir"`
+}
+
+type BuildStep struct {
+	Name    string `json:"name" yaml:"name"`
+	Command string `json:"command" yaml:"command"`
+}
+
+type RunSpec struct {
+	Command string `json:"command" yaml:"command"`
+}
+
+type NotesSpec struct {
+	Markdown string `json:"markdown" yaml:"markdown"`
+	HTML     string `json:"html" yaml:"html"`
+}
+
+type DeclarativeConfig struct {
+	Name        string            `json:"name" yaml:"name"`
+	Version     string            `json:"version" yaml:"version"`
+	Environment string            `json:"environment" yaml:"environment"`
+	IconColor   string            `json:"iconColor" yaml:"icon_color"`
+	Setup       []SetupStep       `json:"setup" yaml:"setup"`
+	EnvVars     map[string]string `json:"envVars" yaml:"env_vars"`
+	Files       []TemplateFile    `json:"files" yaml:"files"`
+	Build       []BuildStep       `json:"build" yaml:"build"`
+	Run         RunSpec           `json:"run" yaml:"run"`
+	Notes       NotesSpec         `json:"notes" yaml:"notes"`
+}
+
+type TemplateSpec struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Environment string            `json:"environment"`
+	IconColor   string            `json:"iconColor"`
+	Config      DeclarativeConfig `json:"config"`
+	RawYAML     string            `json:"rawYaml"`
 }
 
 // Structs for DB mapping
@@ -77,7 +128,9 @@ func NewApp() *App {
 // startup is called when the app starts. The context is saved
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	_ = a.ensureGlobalDBInitialized()
 	_ = a.InitPlayground()
+	_ = a.InitTemplates()
 }
 
 // GetCrabRootDirectory resolves the system bootstrap target location
@@ -97,6 +150,25 @@ func (a *App) GetCrabRootDirectory() string {
 	}
 
 	return filepath.Join(home, ".crabcode")
+}
+
+// ensureGlobalDBInitialized ensures a single global SQLite database at <CrabRoot>/crabcode.db
+func (a *App) ensureGlobalDBInitialized() error {
+	root := a.GetCrabRootDirectory()
+	_ = os.MkdirAll(root, 0755)
+
+	dbPath := filepath.Join(root, "crabcode.db")
+	if a.db != nil {
+		_ = a.db.Close()
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	a.db = db
+
+	return a.migrate()
 }
 
 // IsDirectoryEmpty evaluates if a given path is unpopulated or missing
@@ -120,7 +192,7 @@ func (a *App) IsDirectoryEmpty(path string) (bool, error) {
 	return false, err
 }
 
-// InitializeCrabFolder configures folders and environment directories
+// InitializeCrabFolder configures folders, environment directories, and dynamic templates
 func (a *App) InitializeCrabFolder(path string) error {
 	if path == "" {
 		return errors.New("specified path is empty")
@@ -146,27 +218,199 @@ func (a *App) InitializeCrabFolder(path string) error {
 	}
 
 	_ = os.MkdirAll(settings.UniversalEnvDir, 0755)
+	_ = os.MkdirAll(filepath.Join(path, "playground"), 0755)
+	_ = os.MkdirAll(filepath.Join(path, "sandboxes"), 0755)
 
-	playgroundDir := filepath.Join(path, "playground")
-	_ = os.MkdirAll(playgroundDir, 0755)
+	_ = a.InitTemplates()
+	_ = a.ensureGlobalDBInitialized()
 
-	templates := map[string]string{
-		"scratch.py": "# Python Scratchpad\nprint('Hello from the Python Playground!')\n",
-		"scratch.js": "// Javascript Scratchpad\nconsole.log('Hello from the JavaScript Playground!');\n",
-		"scratch.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from the Go Playground!\")\n}\n",
-		"scratch.rs": "fn main() {\n    println!(\"Hello from the Rust Playground!\");\n}\n",
-		"scratch.java": "// Java Scratchpad\npublic class Scratch {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from the Java Playground!\");\n    }\n}\n",
-		"scratch.ts": "// TypeScript Scratchpad\nconst greeting: string = \"Hello from the TypeScript Playground!\";\nconsole.log(greeting);\n",
-		"scratch.sql": "-- SQL Scratchpad\nCREATE TABLE IF NOT EXISTS scratchpad (id INTEGER PRIMARY KEY, message TEXT);\nINSERT INTO scratchpad (message) VALUES ('Hello from the SQL Playground!');\nSELECT * FROM scratchpad;\n",
-		"scratch.dart": "// Dart Scratchpad\nvoid main() {\n  print('Hello from the Dart Playground!');\n}\n",
+	return nil
+}
+
+// DYNAMIC TEMPLATES ENGINE (<CrabRoot>/templates/*.yaml)
+
+func (a *App) GetTemplatesDirectory() string {
+	return filepath.Join(a.GetCrabRootDirectory(), "templates")
+}
+
+func (a *App) InitTemplates() error {
+	dir := a.GetTemplatesDirectory()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
 	}
 
-	for fileName, content := range templates {
-		filePath := filepath.Join(playgroundDir, fileName)
-		_ = os.WriteFile(filePath, []byte(content), 0644)
+	defaultTemplates := map[string]string{
+		"python.yaml": `name: "Python Environment"
+version: "1.0"
+environment: "python"
+icon_color: "#3572A5"
+setup: []
+env_vars:
+  PYTHONUNBUFFERED: "1"
+files:
+  - path: "main.py"
+    content: "# Python Sandbox\nprint('Hello from CrabCode Python Sandbox!')\n"
+build: []
+run:
+  command: "python3 main.py"
+notes:
+  markdown: "# Python Environment\n\nUse this dynamic environment for algorithmic experiments or script execution."
+  html: "<h3>🐍 Python Sandbox Active</h3>"
+`,
+		"go.yaml": `name: "Go Environment"
+version: "1.0"
+environment: "go"
+icon_color: "#00ADD8"
+setup: []
+files:
+  - path: "main.go"
+    content: "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from CrabCode Go Sandbox!\")\n}\n"
+run:
+  command: "go run main.go"
+notes:
+  markdown: "# Go Sandbox Environment\n\nWrite fast, concurrent system components inside this SQLite environment."
+  html: "<h3 style='color:#00ADD8;'>Go Compiler Environment Active</h3>"
+`,
+		"rust.yaml": `name: "Rust Environment"
+version: "1.0"
+environment: "rust"
+icon_color: "#DEA584"
+setup: []
+files:
+  - path: "main.rs"
+    content: "fn main() {\n    println!(\"Hello from CrabCode Rust Sandbox!\");\n}\n"
+run:
+  command: "rustc main.rs && ./main"
+notes:
+  markdown: "# Rust Sandbox Environment\n\nValidate memory management rules, traits, and complex data models safely."
+  html: "<h3 style='color:#DEA584;'>Rust Core Active</h3>"
+`,
+		"java.yaml": `name: "Java Environment"
+version: "1.0"
+environment: "java"
+icon_color: "#B07219"
+setup: []
+files:
+  - path: "Main.java"
+    content: "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from CrabCode Java Sandbox!\");\n    }\n}\n"
+run:
+  command: "java Main.java"
+notes:
+  markdown: "# Java Sandbox Environment"
+  html: "<h3 style='color:#B07219;'>☕ Java Virtual Machine Active</h3>"
+`,
+		"sql.yaml": `name: "SQL Database Environment"
+version: "1.0"
+environment: "sql"
+icon_color: "#00ADD8"
+setup: []
+files:
+  - path: "main.sql"
+    content: "-- SQL Sandbox\nCREATE TABLE IF NOT EXISTS demo (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT);\nINSERT INTO demo (message) VALUES ('Hello from CrabCode SQL Sandbox!');\nSELECT * FROM demo;\n"
+run:
+  command: "sqlite3 :memory: < main.sql"
+notes:
+  markdown: "# SQL Sandbox Environment\n\nRun in-memory SQLite relational queries and test database schema designs."
+  html: "<h3>💾 SQL Database Engine Active</h3>"
+`,
+		"surrealdb.yaml": `name: "SurrealDB Environment"
+version: "1.0"
+environment: "surrealdb"
+icon_color: "#FF00A0"
+setup: []
+files:
+  - path: "main.surql"
+    content: "-- SurrealDB Sandbox\nCREATE user SET name = 'CrabCode Developer', role = 'Admin';\nSELECT * FROM user;\n"
+run:
+  command: "surreal sql --endpoint memory --db test --ns test < main.surql"
+notes:
+  markdown: "# SurrealDB Sandbox Environment\n\nExecute SurrealQL queries for multi-model graph and document database design."
+  html: "<h3 style='color:#FF00A0;'>⚡ SurrealDB Multi-Model Active</h3>"
+`,
+		"javascript.yaml": `name: "JavaScript Environment"
+version: "1.0"
+environment: "node"
+icon_color: "#F7DF1E"
+setup: []
+files:
+  - path: "index.js"
+    content: "// JavaScript Sandbox\nconsole.log('Hello from CrabCode JavaScript Sandbox!');\n"
+run:
+  command: "node index.js"
+notes:
+  markdown: "# JavaScript Sandbox Environment"
+  html: "<h3>Node.js Environment Ready</h3>"
+`,
+		"typescript.yaml": `name: "TypeScript Environment"
+version: "1.0"
+environment: "node"
+icon_color: "#3178C6"
+setup: []
+files:
+  - path: "index.ts"
+    content: "// TypeScript Sandbox\nconst greeting: string = 'Hello from CrabCode TypeScript Sandbox!';\nconsole.log(greeting);\n"
+run:
+  command: "npx tsx index.ts"
+notes:
+  markdown: "# TypeScript Sandbox Environment"
+  html: "<h3>TypeScript Environment Ready</h3>"
+`,
+	}
+
+	for fileName, content := range defaultTemplates {
+		filePath := filepath.Join(dir, fileName)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			_ = os.WriteFile(filePath, []byte(content), 0644)
+		}
 	}
 
 	return nil
+}
+
+// GetTemplates scans <CrabRoot>/templates/ for all YAML templates dynamically
+func (a *App) GetTemplates() ([]TemplateSpec, error) {
+	_ = a.InitTemplates()
+	dir := a.GetTemplatesDirectory()
+
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var specs []TemplateSpec
+	for _, f := range files {
+		if f.IsDir() || (!strings.HasSuffix(f.Name(), ".yaml") && !strings.HasSuffix(f.Name(), ".yml")) {
+			continue
+		}
+
+		filePath := filepath.Join(dir, f.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		var cfg DeclarativeConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		id := strings.TrimSuffix(strings.TrimSuffix(f.Name(), ".yaml"), ".yml")
+		color := cfg.IconColor
+		if color == "" {
+			color = "#ff5a36"
+		}
+
+		specs = append(specs, TemplateSpec{
+			ID:          id,
+			Name:        cfg.Name,
+			Environment: cfg.Environment,
+			IconColor:   color,
+			Config:      cfg,
+			RawYAML:     string(data),
+		})
+	}
+
+	return specs, nil
 }
 
 // GetPlaygroundDirectory returns the global playground root directory inside CrabRoot
@@ -187,14 +431,15 @@ func (a *App) InitPlayground() error {
 	}
 
 	templates := map[string]string{
-		"scratch.py": "# Python Scratchpad\nprint('Hello from the Python Playground!')\n",
-		"scratch.js": "// Javascript Scratchpad\nconsole.log('Hello from the JavaScript Playground!');\n",
-		"scratch.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from the Go Playground!\")\n}\n",
-		"scratch.rs": "fn main() {\n    println!(\"Hello from the Rust Playground!\");\n}\n",
-		"scratch.java": "// Java Scratchpad\npublic class Scratch {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from the Java Playground!\");\n    }\n}\n",
-		"scratch.ts": "// TypeScript Scratchpad\nconst greeting: string = \"Hello from the TypeScript Playground!\";\nconsole.log(greeting);\n",
-		"scratch.sql": "-- SQL Scratchpad\nCREATE TABLE IF NOT EXISTS scratchpad (id INTEGER PRIMARY KEY, message TEXT);\nINSERT INTO scratchpad (message) VALUES ('Hello from the SQL Playground!');\nSELECT * FROM scratchpad;\n",
-		"scratch.dart": "// Dart Scratchpad\nvoid main() {\n  print('Hello from the Dart Playground!');\n}\n",
+		"scratch.py":    "# Python Scratchpad\nprint('Hello from the Python Playground!')\n",
+		"scratch.js":    "// Javascript Scratchpad\nconsole.log('Hello from the JavaScript Playground!');\n",
+		"scratch.go":    "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from the Go Playground!\")\n}\n",
+		"scratch.rs":    "fn main() {\n    println!(\"Hello from the Rust Playground!\");\n}\n",
+		"scratch.java":  "// Java Scratchpad\npublic class Scratch {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from the Java Playground!\");\n    }\n}\n",
+		"scratch.ts":    "// TypeScript Scratchpad\nconst greeting: string = \"Hello from the TypeScript Playground!\";\nconsole.log(greeting);\n",
+		"scratch.sql":   "-- SQL Scratchpad\nCREATE TABLE IF NOT EXISTS scratchpad (id INTEGER PRIMARY KEY, message TEXT);\nINSERT INTO scratchpad (message) VALUES ('Hello from the SQL Playground!');\nSELECT * FROM scratchpad;\n",
+		"scratch.dart":  "// Dart Scratchpad\nvoid main() {\n  print('Hello from the Dart Playground!');\n}\n",
+		"scratch.surql": "-- SurrealDB Scratchpad\nCREATE user SET name = 'CrabCode', role = 'Developer';\nSELECT * FROM user;\n",
 	}
 
 	for fileName, content := range templates {
@@ -230,9 +475,6 @@ func (a *App) ListDirectory(path string) ([]FileNode, error) {
 
 	nodes := make([]FileNode, 0)
 	for _, file := range files {
-		if file.Name() == ".crab" {
-			continue
-		}
 		nodes = append(nodes, FileNode{
 			Name:  file.Name(),
 			Path:  filepath.Join(path, file.Name()),
@@ -292,26 +534,10 @@ func (a *App) CloseDB() {
 	}
 }
 
-// OpenWorkspace initializes the workspace directory, DB, and migrates tables
+// OpenWorkspace uses the global DB (no per-workspace .crab/)
 func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
-	a.CloseDB()
 	a.workspacePath = path
-
-	crabDir := filepath.Join(path, ".crab")
-	if err := os.MkdirAll(crabDir, 0755); err != nil {
-		return nil, err
-	}
-
-	dbPath := filepath.Join(crabDir, "crab.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
-	}
-	a.db = db
-
-	if err := a.migrate(); err != nil {
-		return nil, err
-	}
+	_ = a.ensureGlobalDBInitialized()
 
 	notes, err := a.GetNotes()
 	if err != nil {
@@ -367,7 +593,6 @@ func (a *App) migrate() error {
 		}
 	}
 
-	// Dynamic column updates for attached Sandbox notes and interactive canvases
 	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN markdown_note TEXT NOT NULL DEFAULT ''")
 	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN html_note TEXT NOT NULL DEFAULT ''")
 
@@ -470,107 +695,77 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (a *App) CreateSandbox(name string, templateType string) (*Sandbox, error) {
+// CreateSandbox creates a sandbox from a dynamic template ID
+func (a *App) CreateSandbox(name string, templateID string) (*Sandbox, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
+	}
+
+	templates, err := a.GetTemplates()
+	if err != nil || len(templates) == 0 {
+		return nil, fmt.Errorf("failed to load template specifications: %w", err)
+	}
+
+	var selectedTemplate TemplateSpec
+	found := false
+	for _, t := range templates {
+		if t.ID == templateID {
+			selectedTemplate = t
+			found = true
+			break
+		}
+	}
+	if !found {
+		selectedTemplate = templates[0]
 	}
 
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	now := time.Now().Format(time.RFC3339)
 
-	type templateConfig struct {
-		configYaml   string
-		mainFileName string
-		mainContent  string
-		markdownNote string
-		htmlNote     string
-	}
+	cfg := selectedTemplate.Config
+	cfg.Name = name
+	configBytes, _ := yaml.Marshal(cfg)
+	configYaml := string(configBytes)
 
-	templates := map[string]templateConfig{
-		"python": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"python\"\nrun_command: \"python3 main.py\"\n", name),
-			mainFileName: "main.py",
-			mainContent:  "# Python Sandbox\nprint('Hello from CrabCode Python Sandbox!')\n",
-			markdownNote: "# Python Sandbox Experiment\n\nUse this playground to research algorithms, run diagnostics, or visualize operations.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.card { border: 1px solid #ff5a3633; display: inline-block; padding: 24px; border-radius: 8px; background: #14141a; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }\n.badge { display: inline-block; background: #ff5a36; color: white; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 14px; margin-bottom: 12px; }\n</style>\n</head>\n<body>\n  <div class='card'>\n    <div class='badge'>\U0001f40d Python Sandbox Active</div>\n    <p>Double-click files in the explorer to get started.</p>\n  </div>\n</body>\n</html>",
-		},
-		"go": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"go\"\nrun_command: \"go run main.go\"\n", name),
-			mainFileName: "main.go",
-			mainContent:  "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from CrabCode Go Sandbox!\")\n}\n",
-			markdownNote: "# Go Sandbox Experiment\n\nWrite fast, concurrent system components inside this SQLite environment.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.spin-container { display: inline-block; animation: spin 5s linear infinite; margin: 20px 0; font-size: 36px; }\n@keyframes spin { 100% { transform: rotate(360deg); } }\n</style>\n</head>\n<body>\n  <div class='spin-container'>\U0001f439</div>\n  <h3 style='color:#00ADD8;'>Go Compiler Environment Active</h3>\n</body>\n</html>",
-		},
-		"rust": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"rust\"\nrun_command: \"rustc main.rs && ./main\"\n", name),
-			mainFileName: "main.rs",
-			mainContent:  "fn main() {\n    println!(\"Hello from CrabCode Rust Sandbox!\");\n}\n",
-			markdownNote: "# Rust Sandbox Experiment\n\nValidate memory management rules, traits, and complex data models safely.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.gear { font-size: 40px; display: inline-block; animation: pulse 2s infinite; color: #DEA584; }\n@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }\n</style>\n</head>\n<body>\n  <div class='gear'>\u2699\ufe0f</div>\n  <h3 style='color: #DEA584;'>Rust Core Active</h3>\n</body>\n</html>",
-		},
-		"java": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"java\"\nrun_command: \"java Main.java\"\n", name),
-			mainFileName: "Main.java",
-			mainContent:  "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from CrabCode Java Sandbox!\");\n    }\n}\n",
-			markdownNote: "# Java Sandbox Experiment\n\nPerfect for object-oriented prototypes and class tests.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.cup { font-size: 45px; display: inline-block; animation: float 3s ease-in-out infinite; }\n@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }\n</style>\n</head>\n<body>\n  <div class='cup'>\u2615</div>\n  <h3 style='color:#B07219;'>Java VM Ready</h3>\n</body>\n</html>",
-		},
-		"javascript": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"node index.js\"\n", name),
-			mainFileName: "index.js",
-			mainContent:  "// JavaScript Sandbox\nconsole.log('Hello from CrabCode JavaScript Sandbox!');\n",
-			markdownNote: "# JavaScript Sandbox Experiment\n\nBuild script solutions or test lightweight async execution patterns here.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.js-box { display: inline-block; background: #F7DF1E; color: black; font-weight: bold; padding: 12px 24px; border-radius: 4px; font-size: 18px; margin: 15px 0; }\n</style>\n</head>\n<body>\n  <div class='js-box'>JS</div>\n  <h3>Node.js Environment Ready</h3>\n</body>\n</html>",
-		},
-		"typescript": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"node\"\nrun_command: \"npx tsx index.ts\"\n", name),
-			mainFileName: "index.ts",
-			mainContent:  "// TypeScript Sandbox\nconst greeting: string = 'Hello from CrabCode TypeScript Sandbox!';\nconsole.log(greeting);\n",
-			markdownNote: "# TypeScript Sandbox Experiment\n\nTry complex typing rules, design structures, or execute Node.js TypeScript programs.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.ts-badge { display: inline-block; background: #3178C6; color: white; font-weight: bold; padding: 8px 16px; border-radius: 4px; }\n</style>\n</head>\n<body>\n  <div class='ts-badge'>TS</div>\n  <h3>TypeScript Environment Ready</h3>\n</body>\n</html>",
-		},
-		"dart": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"dart\"\nrun_command: \"dart run main.dart\"\n", name),
-			mainFileName: "main.dart",
-			mainContent:  "// Dart Sandbox\nvoid main() {\n  print('Hello from CrabCode Dart Sandbox!');\n}\n",
-			markdownNote: "# Dart Sandbox Experiment\n\nRun application workflows or asynchronous streams within the Dart environment.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.dart-target { font-size: 40px; animation: bounce 2s infinite; }\n@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }\n</style>\n</head>\n<body>\n  <div class='dart-target'>\U0001f3af</div>\n  <h3 style='color:#00B4AB;'>Dart Environment Active</h3>\n</body>\n</html>",
-		},
-		"cpp": {
-			configYaml:   fmt.Sprintf("name: \"%s\"\nenvironment: \"cpp\"\nrun_command: \"g++ main.cpp -o main && ./main\"\n", name),
-			mainFileName: "main.cpp",
-			mainContent:  "#include <iostream>\n\nint main() {\n    std::cout << \"Hello from CrabCode C++ Sandbox!\" << std::endl;\n    return 0;\n}\n",
-			markdownNote: "# C++ Sandbox Experiment\n\nEvaluate memory optimization structures, algorithmic benchmarks, or library implementations.",
-			htmlNote:     "<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody { font-family: sans-serif; background: #0c0c12; color: #a0aec0; padding: 20px; text-align: center; }\n.cpp-badge { font-family: monospace; border: 1px solid #00599C; padding: 8px 16px; border-radius: 4px; color: #00599C; display: inline-block; font-weight: bold; }\n</style>\n</head>\n<body>\n  <div class='cpp-badge'>C++</div>\n  <h3>Native compiler systems active</h3>\n</body>\n</html>",
-		},
-	}
+	markdownNote := cfg.Notes.Markdown
+	htmlNote := cfg.Notes.HTML
 
-	tmpl, ok := templates[templateType]
-	if !ok {
-		tmpl = templates["python"]
-	}
-
-	configYaml := tmpl.configYaml
-
-	_, err := a.db.Exec(
+	_, err = a.db.Exec(
 		"INSERT INTO sandboxes (id, name, config_yaml, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, name, configYaml, tmpl.markdownNote, tmpl.htmlNote, now, now,
+		id, name, configYaml, markdownNote, htmlNote, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = a.SaveSandboxFile(id, tmpl.mainFileName, tmpl.mainContent, false)
+	// Write sandbox config directory in <CrabRoot>/sandboxes/<id>/
+	sandboxDir := filepath.Join(a.GetCrabRootDirectory(), "sandboxes", id)
+	_ = os.MkdirAll(sandboxDir, 0755)
+	_ = os.WriteFile(filepath.Join(sandboxDir, "config.yaml"), []byte(configYaml), 0644)
+
+	for _, f := range cfg.Files {
+		_ = a.SaveSandboxFile(id, f.Path, f.Content, f.IsDir)
+	}
 
 	return &Sandbox{
 		ID:           id,
 		Name:         name,
 		ConfigYAML:   configYaml,
-		MarkdownNote: tmpl.markdownNote,
-		HTMLNote:     tmpl.htmlNote,
+		MarkdownNote: markdownNote,
+		HTMLNote:     htmlNote,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+func (a *App) RenameSandbox(id string, name string) error {
+	if a.db == nil {
+		return errors.New("database not initialized")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	_, err := a.db.Exec("UPDATE sandboxes SET name = ?, updated_at = ? WHERE id = ?", name, now, id)
+	return err
 }
 
 func (a *App) DeleteSandbox(id string) error {
@@ -582,6 +777,10 @@ func (a *App) DeleteSandbox(id string) error {
 		return err
 	}
 	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ?", id)
+
+	sandboxDir := filepath.Join(a.GetCrabRootDirectory(), "sandboxes", id)
+	_ = os.RemoveAll(sandboxDir)
+
 	return err
 }
 
@@ -592,6 +791,11 @@ func (a *App) SaveSandboxConfig(id string, configYaml string) error {
 
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET config_yaml = ?, updated_at = ? WHERE id = ?", configYaml, now, id)
+
+	sandboxDir := filepath.Join(a.GetCrabRootDirectory(), "sandboxes", id)
+	_ = os.MkdirAll(sandboxDir, 0755)
+	_ = os.WriteFile(filepath.Join(sandboxDir, "config.yaml"), []byte(configYaml), 0644)
+
 	return err
 }
 
@@ -661,6 +865,16 @@ func (a *App) SaveSandboxFile(sandboxID string, path string, content string, isD
 			return err
 		}
 	}
+
+	// Persist sandbox file in <CrabRoot>/sandboxes/<id>/<path>
+	fileOnDisk := filepath.Join(a.GetCrabRootDirectory(), "sandboxes", sandboxID, path)
+	if isDir {
+		_ = os.MkdirAll(fileOnDisk, 0755)
+	} else {
+		_ = os.MkdirAll(filepath.Dir(fileOnDisk), 0755)
+		_ = os.WriteFile(fileOnDisk, []byte(content), 0644)
+	}
+
 	return nil
 }
 
@@ -675,24 +889,15 @@ func (a *App) DeleteSandboxFile(sandboxID string, path string) error {
 
 	prefix := path + "/"
 	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path LIKE ?", sandboxID, prefix+"%")
+
+	fileOnDisk := filepath.Join(a.GetCrabRootDirectory(), "sandboxes", sandboxID, path)
+	_ = os.RemoveAll(fileOnDisk)
+
 	return err
 }
 
-func parseRunCommand(yamlStr string) (string, error) {
-	lines := strings.Split(yamlStr, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "run_command:") {
-			val := strings.TrimPrefix(line, "run_command:")
-			val = strings.TrimSpace(val)
-			val = strings.Trim(val, `"'`)
-			return val, nil
-		}
-	}
-	return "", errors.New("no valid 'run_command' specified in sandbox configuration rules")
-}
+// DECLARATIVE EXECUTION ENGINE
 
-// RunSandbox extracts virtual SQLite files to a temporary disk location and executes standard runners
 func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error) {
 	if a.db == nil {
 		return "", errors.New("database not initialized")
@@ -704,12 +909,33 @@ func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error
 		return "", fmt.Errorf("failed to retrieve sandbox environment configurations: %w", err)
 	}
 
+	var cfg DeclarativeConfig
+	if err := yaml.Unmarshal([]byte(configYaml), &cfg); err != nil {
+		return "", fmt.Errorf("failed to parse declarative sandbox YAML configuration: %w", err)
+	}
+
+	crabRoot := a.GetCrabRootDirectory()
+
+	// 1. EXECUTE DECLARATIVE SETUP STEPS inside <CrabRoot>/environments/
+	for _, step := range cfg.Setup {
+		if step.Command == "" {
+			continue
+		}
+		targetDir := crabRoot
+		if step.Dir != "" {
+			targetDir = filepath.Join(crabRoot, step.Dir)
+		}
+		_ = os.MkdirAll(targetDir, 0755)
+		_ = a.executeSyncCommand(step.Command, targetDir, cfg.EnvVars)
+	}
+
+	// 2. EXTRACT VIRTUAL FILES TO TEMP COMPILATION DIRECTORY INSIDE SYSTEM BASE LOCATION
 	files, err := a.GetSandboxFiles(sandboxID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load sandbox assets from database: %w", err)
 	}
 
-	tempDir := filepath.Join(a.workspacePath, ".crab", "temp_sandboxes", sandboxID)
+	tempDir := filepath.Join(crabRoot, "temp_sandboxes", sandboxID)
 	_ = os.RemoveAll(tempDir)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to generate sandbox compilation directory: %w", err)
@@ -726,14 +952,23 @@ func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error
 		}
 	}
 
-	runCmd, err := parseRunCommand(configYaml)
-	if err != nil {
-		return "", err
+	// 3. EXECUTE DECLARATIVE BUILD STEPS
+	for _, bStep := range cfg.Build {
+		if bStep.Command == "" {
+			continue
+		}
+		_ = a.executeSyncCommand(bStep.Command, tempDir, cfg.EnvVars)
 	}
 
-	shellOps := strings.Contains(runCmd, "&&") || strings.Contains(runCmd, ";") || strings.Contains(runCmd, "|")
+	// 4. EXECUTE RUN COMMAND
+	runCmd := cfg.Run.Command
+	if runCmd == "" {
+		return "", errors.New("no valid 'run.command' specified in declarative sandbox rules")
+	}
 
-	var processID string
+	processID := "sandbox_" + sandboxID
+	shellOps := strings.Contains(runCmd, "&&") || strings.Contains(runCmd, ";") || strings.Contains(runCmd, "|") || strings.Contains(runCmd, "<") || strings.Contains(runCmd, ">")
+
 	if shellOps {
 		shell := "sh"
 		shellArg := "-c"
@@ -741,18 +976,17 @@ func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error
 			shell = "cmd"
 			shellArg = "/c"
 		}
-		processID = "sandbox_" + sandboxID
-		err = a.RunCommand(processID, shell, []string{shellArg, runCmd}, tempDir)
+		err = a.RunCommandWithEnv(processID, shell, []string{shellArg, runCmd}, tempDir, cfg.EnvVars)
 	} else {
 		cmdParts := strings.Fields(runCmd)
 		if len(cmdParts) == 0 {
-			return "", errors.New("run_command parameter evaluates to empty sequence")
+			return "", errors.New("run.command evaluates to empty sequence")
 		}
 		runnerBin := cmdParts[0]
 		runnerArgs := cmdParts[1:]
-		processID = "sandbox_" + sandboxID
-		err = a.RunCommand(processID, runnerBin, runnerArgs, tempDir)
+		err = a.RunCommandWithEnv(processID, runnerBin, runnerArgs, tempDir, cfg.EnvVars)
 	}
+
 	if err != nil {
 		return "", err
 	}
@@ -760,7 +994,34 @@ func (a *App) RunSandbox(sandboxID string, activeFilePath string) (string, error
 	return processID, nil
 }
 
-// GLOBAL SETTINGS MANAGEMENT
+func (a *App) executeSyncCommand(cmdStr string, dir string, envVars map[string]string) error {
+	shell := "sh"
+	shellArg := "-c"
+	if os.PathSeparator == '\\' {
+		shell = "cmd"
+		shellArg = "/c"
+	}
+
+	cmd := exec.Command(shell, shellArg, cmdStr)
+	cmd.Dir = dir
+
+	env := os.Environ()
+	for k, v := range envVars {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	cmd.Env = env
+
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		runtime.EventsEmit(a.ctx, "terminal_output", map[string]interface{}{
+			"id":   "setup",
+			"line": string(output),
+		})
+	}
+	return err
+}
+
+// GLOBAL SETTINGS & SYSTEM BASE LOCATION MIGRATION
 
 func (a *App) GetGlobalSettings() (GlobalSettings, error) {
 	root := a.GetCrabRootDirectory()
@@ -786,41 +1047,76 @@ func (a *App) GetGlobalSettings() (GlobalSettings, error) {
 	return settings, nil
 }
 
+// SaveGlobalSettings migrates system base directory if changed
 func (a *App) SaveGlobalSettings(settings GlobalSettings) error {
+	oldRoot := a.GetCrabRootDirectory()
+	newRoot := filepath.Clean(settings.CrabRootPath)
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
 
+	// If path changed, migrate existing data from old to new location
+	if oldRoot != newRoot && oldRoot != "" && newRoot != "" {
+		if _, err := os.Stat(oldRoot); err == nil {
+			_ = os.MkdirAll(newRoot, 0755)
+			_ = copyDir(oldRoot, newRoot)
+			_ = os.RemoveAll(oldRoot)
+		}
+	}
+
 	bootstrapFile := filepath.Join(home, ".crabcode_root.txt")
-	if settings.CrabRootPath != "" {
-		settings.CrabRootPath = filepath.Clean(settings.CrabRootPath)
-		if err := os.WriteFile(bootstrapFile, []byte(settings.CrabRootPath), 0644); err != nil {
+	if newRoot != "" {
+		if err := os.WriteFile(bootstrapFile, []byte(newRoot), 0644); err != nil {
 			return fmt.Errorf("failed to save custom system bootstrap file: %w", err)
 		}
-	} else {
-		_ = os.Remove(bootstrapFile)
-		settings.CrabRootPath = filepath.Join(home, ".crabcode")
 	}
 
-	if err := os.MkdirAll(settings.CrabRootPath, 0755); err != nil {
-		return fmt.Errorf("failed to instantiate directory on dynamic root drive: %w", err)
-	}
-
-	settings.UniversalEnvDir = filepath.Join(settings.CrabRootPath, "environments")
+	_ = os.MkdirAll(newRoot, 0755)
+	settings.CrabRootPath = newRoot
+	settings.UniversalEnvDir = filepath.Join(newRoot, "environments")
 	_ = os.MkdirAll(settings.UniversalEnvDir, 0755)
 
-	settingsFile := filepath.Join(settings.CrabRootPath, "settings.json")
+	settingsFile := filepath.Join(newRoot, "settings.json")
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
 	}
+	_ = os.WriteFile(settingsFile, data, 0644)
 
-	return os.WriteFile(settingsFile, data, 0644)
+	// Re-initialize DB connection at new base path
+	return a.ensureGlobalDBInitialized()
 }
 
-// RunCommand executes a command and streams stdout/stderr via Wails events
+func copyDir(src string, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, info.Mode())
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, data, info.Mode())
+	})
+}
+
 func (a *App) RunCommand(id string, commandName string, args []string, dir string) error {
+	return a.RunCommandWithEnv(id, commandName, args, dir, nil)
+}
+
+func (a *App) RunCommandWithEnv(id string, commandName string, args []string, dir string, envVars map[string]string) error {
 	a.processMutex.Lock()
 	if existingCmd, exists := a.activeProcesses[id]; exists {
 		if existingCmd.Process != nil {
@@ -831,6 +1127,14 @@ func (a *App) RunCommand(id string, commandName string, args []string, dir strin
 
 	cmd := exec.Command(commandName, args...)
 	cmd.Dir = dir
+
+	if len(envVars) > 0 {
+		env := os.Environ()
+		for k, v := range envVars {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+		cmd.Env = env
+	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -874,7 +1178,6 @@ func (a *App) RunCommand(id string, commandName string, args []string, dir strin
 	return nil
 }
 
-// StopCommand kills a running process by ID
 func (a *App) StopCommand(id string) error {
 	a.processMutex.Lock()
 	defer a.processMutex.Unlock()

@@ -17,6 +17,7 @@
     DeleteNote,
     GetSandboxes,
     CreateSandbox,
+    RenameSandbox,
     DeleteSandbox,
     SaveSandboxConfig,
     SaveSandboxNotes,
@@ -29,7 +30,8 @@
     GetGlobalSettings,
     SaveGlobalSettings,
     IsDirectoryEmpty,
-    InitializeCrabFolder
+    InitializeCrabFolder,
+    GetTemplates
   } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import FileNode from './FileNode.svelte';
@@ -37,7 +39,8 @@
   import {
     FolderOpen, FilePlus, FolderPlus, Play, Square,
     Terminal, FileText, Settings, Database, BookOpen, Plus, Trash2, Columns, Check,
-    HelpCircle, Eye, Layers
+    PanelLeft, ChevronLeft, ChevronRight, Maximize2, Minimize2,
+    Code2, Eye, Edit3, HelpCircle, Save, Sparkles, FileCode, Layers
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -54,6 +57,10 @@
   import { html } from '@codemirror/lang-html';
   import { css } from '@codemirror/lang-css';
   import { json } from '@codemirror/lang-json';
+  import { java } from '@codemirror/lang-java';
+  import { cpp } from '@codemirror/lang-cpp';
+  import { sql } from '@codemirror/lang-sql';
+  import { markdown } from '@codemirror/lang-markdown';
 
   let activeTab = $state('workspace');
 
@@ -67,6 +74,8 @@
   let lastSavedContent = $state('');
   let isSaving = $state(false);
   let statusMessage = $state('Ready');
+
+  let showSidebar = $state(true);
 
   let isSplitPane = $state(false);
   let splitPaneType = $state('notes');
@@ -110,16 +119,7 @@
   let showCreateSandboxModal = $state(false);
   let newSandboxName = $state('');
   let selectedSandboxTemplate = $state('python');
-  const sandboxTemplates = [
-    { id: 'python', name: 'Python', color: '#3572A5' },
-    { id: 'go', name: 'Go', color: '#00ADD8' },
-    { id: 'rust', name: 'Rust', color: '#DEA584' },
-    { id: 'java', name: 'Java', color: '#B07219' },
-    { id: 'javascript', name: 'JavaScript', color: '#F7DF1E' },
-    { id: 'typescript', name: 'TypeScript', color: '#3178C6' },
-    { id: 'dart', name: 'Dart', color: '#00B4AB' },
-    { id: 'cpp', name: 'C++', color: '#00599C' },
-  ];
+  let availableTemplates = $state([]);
 
   let workspaceEditorContainer = $state(null);
   let notesEditorContainer = $state(null);
@@ -208,10 +208,15 @@
     if (!fileName) return [];
     const ext = (fileName.split('.').pop() || '').toLowerCase();
     switch (ext) {
-      case 'js': case 'ts': case 'jsx': case 'tsx': return javascript();
+      case 'js': case 'jsx': case 'tsx': return javascript();
+      case 'ts': return javascript({ typescript: true });
       case 'py': return python();
       case 'go': return go();
       case 'rs': return rust();
+      case 'java': return java();
+      case 'cpp': case 'c': case 'cc': case 'h': case 'hpp': return cpp();
+      case 'sql': case 'surql': return sql();
+      case 'md': case 'markdown': return markdown();
       case 'html': case 'svelte': return html();
       case 'css': return css();
       case 'json': return json();
@@ -506,7 +511,7 @@
     activeNoteTitle = note.title;
     activeNoteContent = note.content;
     lastSavedNoteContent = note.content;
-    isMarkdownEditing = true;
+    isMarkdownEditing = false;
     updateNotesEditor(note.content);
   }
 
@@ -560,13 +565,20 @@
     }
   }
 
-  function openCreateSandboxModal() {
+  async function openCreateSandboxModal() {
     if (!currentFolder) {
       addToast('Select a workspace first', 'error');
       return;
     }
     newSandboxName = '';
-    selectedSandboxTemplate = 'python';
+    try {
+      availableTemplates = await GetTemplates();
+      if (availableTemplates.length > 0) {
+        selectedSandboxTemplate = availableTemplates[0].id;
+      }
+    } catch (err) {
+      addToast('Failed to load dynamic templates: ' + String(err), 'error');
+    }
     showCreateSandboxModal = true;
   }
 
@@ -591,6 +603,33 @@
     openCreateSandboxModal();
   }
 
+  let renameTimer = null;
+  function handleAutoRenameSandbox(newName, immediate = false) {
+    if (!activeSandboxId) return;
+    activeSandboxName = newName;
+    const cleanName = newName.trim() || 'Untitled Sandbox';
+
+    const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
+    if (si !== -1) {
+      sandboxesList[si].name = cleanName;
+    }
+
+    const doSave = async () => {
+      try {
+        await RenameSandbox(activeSandboxId, cleanName);
+      } catch (err) {
+        addToast('Failed to auto-save sandbox title: ' + String(err), 'error');
+      }
+    };
+
+    clearTimeout(renameTimer);
+    if (immediate) {
+      doSave();
+    } else {
+      renameTimer = setTimeout(doSave, 500);
+    }
+  }
+
   async function selectSandbox(sandbox) {
     activeSandboxId = sandbox.id;
     activeSandboxName = sandbox.name;
@@ -601,6 +640,9 @@
     activeSandboxHTMLNote = sandbox.htmlNote || '';
     lastSavedSandboxMarkdownNote = sandbox.markdownNote || '';
     lastSavedSandboxHTMLNote = sandbox.htmlNote || '';
+
+    isSandboxMarkdownEditing = false;
+    isSandboxHTMLEditing = false;
 
     await loadSandboxFiles();
   }
@@ -749,9 +791,15 @@
       } else if (ext === 'go') {
         runnerCmd = 'go';
         runnerArgs = ['run', activeFilePath];
+      } else if (ext === 'rs') {
+        runnerCmd = 'rustc';
+        runnerArgs = [activeFilePath, '-o', 'main', '&&', './main'];
       } else if (ext === 'java') {
         runnerCmd = 'java';
         runnerArgs = [activeFilePath];
+      } else if (ext === 'cpp' || ext === 'c') {
+        runnerCmd = 'g++';
+        runnerArgs = [activeFilePath, '-o', 'main', '&&', './main'];
       } else if (ext === 'ts') {
         runnerCmd = 'npx';
         runnerArgs = ['tsx', activeFilePath];
@@ -759,8 +807,11 @@
         runnerCmd = 'dart';
         runnerArgs = ['run', activeFilePath];
       } else if (ext === 'sql') {
-        runnerCmd = 'sqlite3';
-        runnerArgs = [activeFilePath];
+        runnerCmd = 'sh';
+        runnerArgs = ['-c', `sqlite3 :memory: < "${activeFilePath}"`];
+      } else if (ext === 'surql') {
+        runnerCmd = 'sh';
+        runnerArgs = ['-c', `surreal sql --endpoint memory --ns test --db test < "${activeFilePath}"`];
       } else {
         consoleLogs = [...consoleLogs, `[Runner Error] No run configuration for ".${ext}" files.`];
         isRunning = false;
@@ -885,7 +936,10 @@
   function renderMarkdownLine(line) {
     if (line.startsWith('# ')) return { type: 'h1', text: line.slice(2) };
     if (line.startsWith('## ')) return { type: 'h2', text: line.slice(3) };
-    if (line.startsWith('- ')) return { type: 'li', text: line.slice(2) };
+    if (line.startsWith('### ')) return { type: 'h3', text: line.slice(4) };
+    if (line.startsWith('> ')) return { type: 'quote', text: line.slice(2) };
+    if (line.startsWith('- ') || line.startsWith('* ')) return { type: 'li', text: line.slice(2) };
+    if (line.trim().startsWith('```')) return { type: 'codeblock', text: line.trim() };
     if (line.trim() === '') return { type: 'br', text: '' };
     return { type: 'p', text: line };
   }
@@ -896,13 +950,31 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS 
 
 Please generate:
 1. The necessary code files (specifying relative file paths) to accomplish this. The code should be self-contained and ready to execute.
-2. A YAML configuration block containing the "run_command" to execute the sandbox project once compiled in a temporary directory.
+2. A Declarative IaC YAML configuration containing setup steps, env_vars, virtual files, build steps, run command, and notes.
 
 The YAML configuration should follow this structure:
 \`\`\`yaml
 name: "My Sandbox Project"
-environment: "[python / node / go / rust / etc.]"
-run_command: "[exact terminal command to run your main file, e.g. 'python3 main.py' or 'node index.js']"
+version: "1.0"
+environment: "[python / node / go / rust / java / etc.]"
+icon_color: "#HEXCOLOR"
+setup:
+  - name: "Setup step"
+    command: "command to prepare environment"
+    dir: "environments/<name>"
+env_vars:
+  KEY: "value"
+files:
+  - path: "main.py"
+    content: "print('hello')"
+build:
+  - name: "Compile check"
+    command: "compilation command"
+run:
+  command: "exact terminal command to run your main file"
+notes:
+  markdown: "# Documentation"
+  html: "<h3>Interactive Canvas</h3>"
 \`\`\`
 
 Format your output clearly, specifying filenames and file contents separately so I can easily save them into my SQLite virtual filesystem.`;
@@ -1000,17 +1072,29 @@ Format your output clearly, specifying filenames and file contents separately so
     >
       <div class="modal-header">Sandbox Environment Guide</div>
       <div class="modal-body guide-body">
-        <p>CrabCode sandboxes are virtual, isolated mini-projects stored inside your workspace SQLite database (<code>.crab/crab.db</code>).</p>
-        <h4>Execution Lifecycle</h4>
+        <p>CrabCode sandboxes are virtual, isolated mini-projects stored inside your system base location (<code>~/.crabcode/crabcode.db</code>). Your workspace folder stays 100% clean — no <code>.crab/</code> directory is created there.</p>
+        <h4>IaC Execution Lifecycle</h4>
         <ol>
-          <li>Upon execution, CrabCode creates an isolated directory inside <code>.crab/temp_sandboxes/</code>.</li>
-          <li>It extracts all database-stored files associated with the sandbox into this folder.</li>
-          <li>It executes your defined <strong>run_command</strong> inside that compilation directory.</li>
+          <li><strong>Setup</strong>: declarative <code>setup</code> steps run inside <code>~/.crabcode/environments/</code></li>
+          <li><strong>Extract</strong>: virtual files are extracted to <code>~/.crabcode/temp_sandboxes/&lt;id&gt;/</code></li>
+          <li><strong>Build</strong>: <code>build</code> steps run in the temp directory</li>
+          <li><strong>Run</strong>: <code>run.command</code> executes with configured <code>env_vars</code></li>
         </ol>
-        <h4>YAML Configuration</h4>
-        <pre class="guide-code"><code>name: "Weather Tracker Experiment"
+        <h4>Declarative YAML Configuration</h4>
+         <pre class="guide-code"><code>name: "Weather Tracker Experiment"
 environment: "python"
-run_command: "python3 main.py"</code></pre>
+setup: []
+env_vars:
+  KEY: "value"
+files:
+  - path: "main.py"
+    content: "print('hello')"
+build: []
+run:
+  command: "python3 main.py"
+notes:
+  markdown: "# Experiment doc"
+  html: "&lt;h3&gt;Live View&lt;/h3&gt;"</code></pre>
         <h4>Outsource Setup to AI</h4>
         <p>Use this prompt template with an AI assistant to generate sandbox files and config:</p>
         <div class="prompt-box">
@@ -1053,15 +1137,15 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
             if (e.key === 'Escape') cancelCreateSandbox();
           }}
         />
-        <label class="sandbox-modal-label">Template</label>
+        <label class="sandbox-modal-label" for="sandboxTemplate">Template (Loaded dynamically from templates/)</label>
         <div class="templates-grid">
-          {#each sandboxTemplates as tmpl}
+          {#each availableTemplates as tmpl}
             <button
               class="template-option"
               class:selected={selectedSandboxTemplate === tmpl.id}
               onclick={() => selectedSandboxTemplate = tmpl.id}
             >
-              <span class="template-dot" style="background-color: {tmpl.color}"></span>
+              <span class="template-dot" style="background-color: {tmpl.iconColor}"></span>
               <span class="template-name">{tmpl.name}</span>
             </button>
           {/each}
@@ -1078,7 +1162,20 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
 <div class="app-shell">
   <header class="top-header">
     <div class="top-header-left">
-      <span class="app-brand">CrabCode</span>
+      {#if activeTab !== 'settings'}
+        <button
+          class="sidebar-toggle-btn"
+          class:active={showSidebar}
+          onclick={() => showSidebar = !showSidebar}
+          title={showSidebar ? 'Hide Sidebar' : 'Show Sidebar'}
+        >
+          <PanelLeft size={16} />
+        </button>
+      {/if}
+      <span class="app-brand">
+        <Code2 size={18} class="brand-icon" />
+        CrabCode
+      </span>
       <button class="open-btn compact" onclick={chooseFolder}>
         <FolderOpen size={14} />
         <span>Select Workspace</span>
@@ -1126,7 +1223,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   </header>
 
   <div class="app-body">
-    {#if activeTab !== 'settings'}
+    {#if showSidebar && activeTab !== 'settings'}
       <aside class="sidebar">
         <div class="file-tree-container">
           {#if activeTab === 'workspace'}
@@ -1141,6 +1238,9 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                   </button>
                   <button class="toolbar-btn" onclick={createFolder} title="New Folder">
                     <FolderPlus size={13} />
+                  </button>
+                  <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sidebar">
+                    <ChevronLeft size={13} />
                   </button>
                 </div>
               </div>
@@ -1166,9 +1266,14 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
           {:else if activeTab === 'notes'}
             <div class="section-context-header">
               <span class="project-title">SQLite Notes</span>
-              <button class="toolbar-btn primary" onclick={handleCreateNote} title="New Note">
-                <Plus size={13} />
-              </button>
+              <div class="sidebar-toolbar">
+                <button class="toolbar-btn primary" onclick={handleCreateNote} title="New Note">
+                  <Plus size={13} />
+                </button>
+                <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sidebar">
+                  <ChevronLeft size={13} />
+                </button>
+              </div>
             </div>
             <div class="notes-explorer">
               <input
@@ -1206,11 +1311,11 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
             <div class="section-context-header">
               <span class="project-title">Virtual Sandboxes</span>
               <div class="sidebar-toolbar">
-                <button class="toolbar-btn" onclick={() => showGuideModal = true} title="Sandbox Guide">
-                  <HelpCircle size={13} />
-                </button>
                 <button class="toolbar-btn primary" onclick={handleCreateSandbox} title="New Sandbox">
                   <Plus size={13} />
+                </button>
+                <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sandbox Panel">
+                  <ChevronLeft size={13} />
                 </button>
               </div>
             </div>
@@ -1224,7 +1329,10 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                   tabindex="0"
                   onkeydown={(e) => e.key === 'Enter' && selectSandbox(sandbox)}
                 >
-                  <span class="item-title">{sandbox.name}</span>
+                  <div class="item-title-wrap">
+                    <Layers size={13} class="item-icon" />
+                    <span class="item-title">{sandbox.name}</span>
+                  </div>
                   <button
                     class="item-delete-btn"
                     onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}
@@ -1243,7 +1351,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
       </aside>
     {/if}
 
-    <main class="editor-panel" class:full-width={activeTab === 'settings'}>
+    <main class="editor-panel" class:full-width={activeTab === 'settings' || !showSidebar}>
       {#if activeTab === 'workspace'}
         {#if activeFilePath}
           <div class="editor-header">
@@ -1306,7 +1414,11 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                     </span>
                     <div class="split-controls">
                       <button class="split-btn" onclick={() => isMarkdownEditing = !isMarkdownEditing}>
-                        {isMarkdownEditing ? 'Preview' : 'Edit'}
+                        {#if isMarkdownEditing}
+                          <Eye size={11} /> Preview
+                        {:else}
+                          <Edit3 size={11} /> Edit
+                        {/if}
                       </button>
                       <button class="split-btn save" onclick={handleSaveNote} disabled={!activeNoteUnsaved}>
                         Save
@@ -1325,8 +1437,14 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                               <h1>{part.text}</h1>
                             {:else if part.type === 'h2'}
                               <h2>{part.text}</h2>
+                            {:else if part.type === 'h3'}
+                              <h3>{part.text}</h3>
+                            {:else if part.type === 'quote'}
+                              <blockquote>{part.text}</blockquote>
                             {:else if part.type === 'li'}
                               <li>{part.text}</li>
+                            {:else if part.type === 'codeblock'}
+                              <pre class="inline-codeblock"><code>{part.text}</code></pre>
                             {:else if part.type === 'br'}
                               <br />
                             {:else}
@@ -1406,7 +1524,13 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
               <input type="text" class="note-title-input" bind:value={activeNoteTitle} placeholder="Note title" />
               <div class="note-header-actions">
                 <button class="action-btn" onclick={() => isMarkdownEditing = !isMarkdownEditing}>
-                  {isMarkdownEditing ? 'Preview' : 'Edit'}
+                  {#if isMarkdownEditing}
+                    <Eye size={13} />
+                    <span>Preview</span>
+                  {:else}
+                    <Edit3 size={13} />
+                    <span>Edit</span>
+                  {/if}
                 </button>
                 <button class="action-btn primary" onclick={handleSaveNote} disabled={!activeNoteUnsaved}>
                   Save Note
@@ -1424,8 +1548,14 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                       <h1>{part.text}</h1>
                     {:else if part.type === 'h2'}
                       <h2>{part.text}</h2>
+                    {:else if part.type === 'h3'}
+                      <h3>{part.text}</h3>
+                    {:else if part.type === 'quote'}
+                      <blockquote>{part.text}</blockquote>
                     {:else if part.type === 'li'}
                       <li>{part.text}</li>
+                    {:else if part.type === 'codeblock'}
+                      <pre class="inline-codeblock"><code>{part.text}</code></pre>
                     {:else if part.type === 'br'}
                       <br />
                     {:else}
@@ -1460,10 +1590,21 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
         {#if activeSandboxId}
           <div class="sandbox-tab-panel">
             <div class="sandbox-header-controls">
-              <div class="sandbox-metadata">
-                <h2>{activeSandboxName}</h2>
-                <span class="sandbox-id-badge">SQLITE VIRTUAL PROJECT</span>
+              <div class="sandbox-title-container">
+                <input
+                  type="text"
+                  class="sandbox-title-input"
+                  value={activeSandboxName}
+                  placeholder="Sandbox Title"
+                  oninput={(e) => handleAutoRenameSandbox(e.target.value)}
+                  onblur={(e) => handleAutoRenameSandbox(e.target.value, true)}
+                />
+                <span class="sandbox-id-badge">
+                  <Database size={10} />
+                  SQLITE VIRTUAL PROJECT
+                </span>
               </div>
+
               <div class="sandbox-actions">
                 <button
                   class="action-btn"
@@ -1472,30 +1613,39 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                   title="Toggle Virtual Files Sidebar"
                 >
                   <Columns size={13} />
-                  <span>{showSandboxExplorer ? "Hide Files" : "Files"}</span>
+                  <span>Files</span>
                 </button>
                 <button
                   class="action-btn"
                   class:active={showSandboxSplit}
                   onclick={() => showSandboxSplit = !showSandboxSplit}
-                  title="Toggle Notes Split Pane"
+                  title="Toggle Notes/Inspector Split"
                 >
                   <FileText size={13} />
-                  <span>{showSandboxSplit ? "Hide Notes" : "Notes"}</span>
+                  <span>Notes</span>
+                </button>
+                <button
+                  class="action-btn guide-btn"
+                  onclick={() => showGuideModal = true}
+                  title="Sandbox Guide & IaC Rules"
+                >
+                  <HelpCircle size={13} />
+                  <span>Guide</span>
                 </button>
                 {#if !isRunning}
-                  <button class="action-btn run" onclick={runActiveCode}>
+                  <button class="action-btn run" onclick={runActiveCode} title="Run Sandbox">
                     <Play size={13} fill="#48bb78" stroke="none" />
                     <span>Run</span>
                   </button>
                 {:else}
-                  <button class="action-btn stop" onclick={stopActiveProcess}>
+                  <button class="action-btn stop" onclick={stopActiveProcess} title="Stop Sandbox">
                     <Square size={13} fill="#ff5a36" stroke="none" />
                     <span>Stop</span>
                   </button>
                 {/if}
-                <button class="action-btn primary" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved}>
-                  Save
+                <button class="action-btn primary" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved} title="Save Sandbox Changes">
+                  <Save size={13} />
+                  <span>Save</span>
                 </button>
               </div>
             </div>
@@ -1505,20 +1655,23 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                 {#if showSandboxExplorer}
                   <div class="sandbox-virtual-explorer">
                     <div class="v-explorer-header">
-                      <span>Virtual Files</span>
+                      <span class="v-explorer-title">
+                        <FileCode size={12} />
+                        Virtual Files
+                      </span>
                       <button class="v-explorer-btn" onclick={handleCreateSandboxFile} title="Add file">
-                        <Plus size={12} />
+                        <Plus size={13} />
                       </button>
                     </div>
                     <div class="virtual-files-list">
                       {#each sandboxFilesList as vFile (vFile.path)}
-                        <div class="v-file-row-wrap">
+                        <div class="v-file-row-wrap" class:active={activeSandboxFilePath === vFile.path}>
                           <button
                             class="v-file-row"
-                            class:active={activeSandboxFilePath === vFile.path}
                             onclick={() => selectSandboxFile(vFile)}
                           >
-                            <span>{vFile.path}</span>
+                            <FileCode size={13} class="v-file-icon" />
+                            <span class="v-file-name">{vFile.path}</span>
                           </button>
                           <button
                             class="v-file-delete"
@@ -1535,6 +1688,13 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
 
                 <div class="sandbox-editor-wrapper">
                   {#if activeSandboxFilePath}
+                    <div class="v-file-info">
+                      <span class="v-file-active-name">{activeSandboxFileName}</span>
+                      <span class="v-file-active-path">{activeSandboxFilePath}</span>
+                      {#if activeSandboxFileUnsaved}
+                        <span class="unsaved-pill">Unsaved</span>
+                      {/if}
+                    </div>
                     <div class="sandbox-cm-container full" bind:this={sandboxEditorContainer}></div>
                   {:else}
                     <div class="split-empty">No virtual file selected.</div>
@@ -1551,6 +1711,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                         class:active={sandboxSplitType === 'markdown'}
                         onclick={() => sandboxSplitType = 'markdown'}
                       >
+                        <BookOpen size={12} />
                         Markdown Note
                       </button>
                       <button
@@ -1558,6 +1719,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                         class:active={sandboxSplitType === 'html'}
                         onclick={() => sandboxSplitType = 'html'}
                       >
+                        <Sparkles size={12} />
                         HTML Canvas
                       </button>
                       <button
@@ -1565,6 +1727,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                         class:active={sandboxSplitType === 'yaml'}
                         onclick={() => sandboxSplitType = 'yaml'}
                       >
+                        <Settings size={12} />
                         YAML Config
                       </button>
                     </div>
@@ -1579,7 +1742,11 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                             class="split-btn"
                             onclick={() => isSandboxMarkdownEditing = !isSandboxMarkdownEditing}
                           >
-                            {isSandboxMarkdownEditing ? 'Preview' : 'Edit'}
+                            {#if isSandboxMarkdownEditing}
+                              <Eye size={11} /> Preview
+                            {:else}
+                              <Edit3 size={11} /> Edit
+                            {/if}
                           </button>
                         </div>
                         {#if isSandboxMarkdownEditing}
@@ -1596,8 +1763,14 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                                 <h1>{part.text}</h1>
                               {:else if part.type === 'h2'}
                                 <h2>{part.text}</h2>
+                              {:else if part.type === 'h3'}
+                                <h3>{part.text}</h3>
+                              {:else if part.type === 'quote'}
+                                <blockquote>{part.text}</blockquote>
                               {:else if part.type === 'li'}
                                 <li>{part.text}</li>
+                              {:else if part.type === 'codeblock'}
+                                <pre class="inline-codeblock"><code>{part.text}</code></pre>
                               {:else if part.type === 'br'}
                                 <br />
                               {:else}
@@ -1619,7 +1792,11 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                             class="split-btn"
                             onclick={() => isSandboxHTMLEditing = !isSandboxHTMLEditing}
                           >
-                            {isSandboxHTMLEditing ? 'View Live' : 'Edit HTML'}
+                            {#if isSandboxHTMLEditing}
+                              <Eye size={11} /> View Live
+                            {:else}
+                              <Edit3 size={11} /> Edit HTML
+                            {/if}
                           </button>
                         </div>
                         {#if isSandboxHTMLEditing}
@@ -1652,7 +1829,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                         <textarea
                           class="yaml-textarea"
                           bind:value={activeSandboxConfig}
-                          placeholder={'name: "My Sandbox"\nenvironment: "python"\nrun_command: "python3 main.py"'}
+                          placeholder={'name: "My Sandbox"\nenvironment: "python"\nrun:\n  command: "python3 main.py"'}
                         ></textarea>
                         {#if activeSandboxConfigUnsaved}
                           <p class="yaml-unsaved-hint">Config has unsaved changes.</p>
@@ -1696,10 +1873,6 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
               <p>Virtual mini-projects stored in SQLite. Extract to temp, run with YAML-defined commands.</p>
               {#if currentFolder}
                 <div style="display: flex; gap: 8px; justify-content: center;">
-                  <button class="action-btn" onclick={() => showGuideModal = true}>
-                    <HelpCircle size={14} />
-                    <span>Guide</span>
-                  </button>
                   <button class="action-btn primary" onclick={handleCreateSandbox}>
                     <Plus size={14} />
                     <span>Create Sandbox</span>
@@ -1828,11 +2001,19 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   }
 
   .app-brand {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 800;
     color: #ff5a36;
     letter-spacing: 0.3px;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  :global(.brand-icon) {
+    color: #ff5a36;
+    flex-shrink: 0;
   }
 
   .open-btn.compact {
@@ -2090,6 +2271,19 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     border-bottom-left-radius: 0;
   }
 
+  .item-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  :global(.item-icon) {
+    color: #718096;
+    flex-shrink: 0;
+  }
+
   .item-title {
     white-space: nowrap;
     overflow: hidden;
@@ -2300,10 +2494,13 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     background-color: #1c1c28;
     color: #edf2f7;
     border: 1px solid #2d3748;
-    padding: 2px 8px;
+    padding: 3px 8px;
     font-size: 11px;
     border-radius: 4px;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .split-btn.save {
@@ -2367,6 +2564,32 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     margin-top: 14px;
   }
 
+  .markdown-rendered-view h3 {
+    font-size: 13px;
+    color: #ff8c73;
+    margin-top: 12px;
+  }
+
+  .markdown-rendered-view blockquote {
+    border-left: 3px solid #ff5a36;
+    margin: 8px 0;
+    padding-left: 12px;
+    color: #a0aec0;
+    font-style: italic;
+  }
+
+  .markdown-rendered-view .inline-codeblock {
+    background-color: #0c0c12;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+    color: #ff8c73;
+    overflow-x: auto;
+    margin: 6px 0;
+  }
+
   .markdown-rendered-view p {
     margin: 8px 0;
   }
@@ -2401,6 +2624,12 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     gap: 12px;
   }
 
+  .note-header-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
   .note-title-input {
     background: none;
     border: none;
@@ -2433,7 +2662,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   }
 
   .sandbox-header-controls {
-    padding: 12px 16px;
+    padding: 10px 16px;
     background-color: #0c0c12;
     border-bottom: 1px solid #1a1a24;
     display: flex;
@@ -2443,22 +2672,48 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     flex-wrap: wrap;
   }
 
-  .sandbox-metadata h2 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 700;
+  .sandbox-title-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .sandbox-title-input {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
     color: #edf2f7;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 4px 8px;
+    outline: none;
+    transition: border-color 0.15s, background-color 0.15s;
+    min-width: 180px;
+    max-width: 320px;
+  }
+
+  .sandbox-title-input:hover {
+    border-color: #2d3748;
+    background-color: #121218;
+  }
+
+  .sandbox-title-input:focus {
+    border-color: #ff5a36;
+    background-color: #121218;
   }
 
   .sandbox-id-badge {
-    font-size: 9px;
-    background-color: #2b2b3c;
-    color: #a0aec0;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 700;
-    margin-top: 4px;
-    display: inline-block;
+    font-size: 10px;
+    background-color: #1a1a26;
+    border: 1px solid #ff5a3633;
+    color: #ff8c73;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     letter-spacing: 0.4px;
   }
 
@@ -2523,6 +2778,16 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     cursor: not-allowed;
   }
 
+  .action-btn.guide-btn {
+    border-color: #6366f155;
+    color: #818cf8;
+  }
+
+  .action-btn.guide-btn:hover {
+    background-color: #6366f11a;
+    color: #a5b4fc;
+  }
+
   .sandbox-working-split {
     flex: 1;
     display: flex;
@@ -2552,6 +2817,12 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     text-transform: uppercase;
   }
 
+  .v-explorer-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .v-explorer-btn {
     background: none;
     border: none;
@@ -2578,6 +2849,11 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     display: flex;
     align-items: center;
     gap: 2px;
+    border-radius: 4px;
+  }
+
+  .v-file-row-wrap.active {
+    background-color: #1c1c28;
   }
 
   .v-file-row {
@@ -2590,14 +2866,24 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     font-size: 12px;
     border-radius: 4px;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  :global(.v-file-icon) {
+    color: #718096;
+    flex-shrink: 0;
+  }
+
+  .v-file-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .v-file-row:hover,
-  .v-file-row.active {
-    background-color: #1c1c28;
+  .v-file-row:hover {
     color: #edf2f7;
   }
 
@@ -2619,9 +2905,40 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
 
   .sandbox-editor-wrapper {
     flex: 1;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
     background-color: #14141a;
     min-width: 0;
+  }
+
+  .v-file-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    background-color: #0c0c12;
+    border-bottom: 1px solid #1a1a24;
+  }
+
+  .v-file-active-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #edf2f7;
+  }
+
+  .v-file-active-path {
+    font-size: 11px;
+    color: #718096;
+  }
+
+  .unsaved-pill {
+    font-size: 10px;
+    background-color: #ff5a3622;
+    color: #ff5a36;
+    border: 1px solid #ff5a3644;
+    padding: 1px 6px;
+    border-radius: 10px;
   }
 
   .sandbox-notes-pane {
