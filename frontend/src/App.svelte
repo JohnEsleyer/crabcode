@@ -115,6 +115,10 @@
   let selectedSandboxTemplate = $state('python');
   let availableTemplates = $state([]);
 
+  let showMoveSandboxModal = $state(false);
+  let moveSandboxId = $state('');
+  let moveNewFolderName = $state('');
+
   let showInitEnvModal = $state(false);
   let isInitializingEnv = $state(false);
   let isEnvInitialized = $state(true);
@@ -494,18 +498,67 @@
     }
   }
 
-  async function moveSandboxToFolder(sandboxId) {
-    const folderName = await openPrompt('Move to Folder (leave blank for root)', 'Games');
-    if (folderName === null) return;
-    const targetFolder = folderName.trim();
+  function openMoveSandboxModal(sandboxId) {
+    moveSandboxId = sandboxId;
+    moveNewFolderName = '';
+    showMoveSandboxModal = true;
+  }
+
+  async function confirmMoveSandbox(targetFolder) {
+    showMoveSandboxModal = false;
+    const id = moveSandboxId;
+    moveSandboxId = '';
     try {
-      await MoveSandbox(sandboxId, targetFolder);
-      const si = sandboxesList.findIndex(s => s.id === sandboxId);
-      if (si !== -1) sandboxesList[si].folder = targetFolder;
-      if (targetFolder && !virtualFolders.includes(targetFolder)) {
-        virtualFolders = [...virtualFolders, targetFolder];
+      await MoveSandbox(id, targetFolder);
+      const si = sandboxesList.findIndex(s => s.id === id);
+      if (si !== -1) {
+        if (targetFolder && !virtualFolders.includes(targetFolder)) {
+          virtualFolders = [...virtualFolders, targetFolder];
+        }
+        sandboxesList[si].folder = targetFolder;
       }
       addToast('Sandbox moved', 'success');
+    } catch (err) {
+      addToast(String(err), 'error');
+    }
+  }
+
+  function handleDragStart(e, sandboxId) {
+    e.dataTransfer.setData('text/plain', sandboxId);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  async function handleDropOnFolder(e, folderName) {
+    e.preventDefault();
+    const sandboxId = e.dataTransfer.getData('text/plain');
+    if (!sandboxId) return;
+    try {
+      await MoveSandbox(sandboxId, folderName);
+      const si = sandboxesList.findIndex(s => s.id === sandboxId);
+      if (si !== -1) sandboxesList[si].folder = folderName;
+      if (folderName && !virtualFolders.includes(folderName)) {
+        virtualFolders = [...virtualFolders, folderName];
+      }
+      addToast('Sandbox moved', 'success');
+    } catch (err) {
+      addToast(String(err), 'error');
+    }
+  }
+
+  async function handleDropOnRoot(e) {
+    e.preventDefault();
+    const sandboxId = e.dataTransfer.getData('text/plain');
+    if (!sandboxId) return;
+    try {
+      await MoveSandbox(sandboxId, '');
+      const si = sandboxesList.findIndex(s => s.id === sandboxId);
+      if (si !== -1) sandboxesList[si].folder = '';
+      addToast('Sandbox moved to root', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
@@ -1126,6 +1179,53 @@
   </div>
 {/if}
 
+{#if showMoveSandboxModal}
+  <div class="modal-backdrop" onclick={() => showMoveSandboxModal = false} role="presentation">
+    <div class="modal-box move-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">Move Sandbox</div>
+      <div class="modal-body">
+        <div class="move-folder-list">
+          <button class="move-folder-option" onclick={() => confirmMoveSandbox('')}>
+            <Layers size={16} />
+            <span class="move-folder-label">Root (No Folder)</span>
+            <span class="move-folder-count">({(folderGroupedSandboxes[''] || []).length})</span>
+          </button>
+          {#each virtualFolders as folderName}
+            <button class="move-folder-option" onclick={() => confirmMoveSandbox(folderName)}>
+              <Folder size={16} class="v-folder-icon" />
+              <span class="move-folder-label">{folderName}</span>
+              <span class="move-folder-count">({(folderGroupedSandboxes[folderName] || []).length})</span>
+            </button>
+          {/each}
+          <div class="move-new-folder-section">
+            <input
+              type="text"
+              class="modal-input"
+              placeholder="Create new folder..."
+              bind:value={moveNewFolderName}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && moveNewFolderName.trim()) {
+                  confirmMoveSandbox(moveNewFolderName.trim());
+                }
+              }}
+            />
+            <button
+              class="modal-btn primary create-folder-btn"
+              disabled={!moveNewFolderName.trim()}
+              onclick={() => moveNewFolderName.trim() && confirmMoveSandbox(moveNewFolderName.trim())}
+            >
+              <Plus size={12} /> Create & Move
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showMoveSandboxModal = false}>Cancel</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showCreateSandboxModal}
   <div class="modal-backdrop" onclick={() => showCreateSandboxModal = false} role="presentation">
     <div class="modal-box sandbox-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
@@ -1227,6 +1327,8 @@
                     <div
                       class="virtual-folder-header"
                       onclick={() => expandedVirtualFolders[folderName] = !expandedVirtualFolders[folderName]}
+                      ondragover={handleDragOver}
+                      ondrop={(e) => handleDropOnFolder(e, folderName)}
                       role="button"
                       tabindex="0"
                     >
@@ -1242,12 +1344,12 @@
                     {#if expandedVirtualFolders[folderName]}
                       <div class="folder-children-list">
                         {#each itemsInFolder as sandbox (sandbox.id)}
-                          <div class="sqlite-item-row nested" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
+                          <div class="sqlite-item-row nested" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} draggable="true" ondragstart={(e) => handleDragStart(e, sandbox.id)} role="button" tabindex="0">
                             <div class="item-title-wrap">
                               <Layers size={12} class="item-icon" />
                               <span class="item-title">{sandbox.name}</span>
                             </div>
-                            <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); moveSandboxToFolder(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
+                            <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); openMoveSandboxModal(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
                             <button class="item-delete-btn" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}><Trash2 size={11} /></button>
                           </div>
                         {/each}
@@ -1256,16 +1358,19 @@
                   </div>
                 {/each}
 
+                <div class="root-sandbox-drop-zone" ondragover={handleDragOver} ondrop={handleDropOnRoot}>
                 {#each (folderGroupedSandboxes[''] || []) as sandbox (sandbox.id)}
-                  <div class="sqlite-item-row" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
+                  <div class="sqlite-item-row" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} draggable="true" ondragstart={(e) => handleDragStart(e, sandbox.id)} role="button" tabindex="0">
                     <div class="item-title-wrap">
                       <Layers size={13} class="item-icon" />
                       <span class="item-title">{sandbox.name}</span>
                     </div>
-                    <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); moveSandboxToFolder(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
+                    <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); openMoveSandboxModal(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
                     <button class="item-delete-btn" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}><Trash2 size={12} /></button>
                   </div>
                 {/each}
+                </div>
+                <div class="root-drop-hint" ondragover={handleDragOver} ondrop={handleDropOnRoot}>Drop here to move to root</div>
 
                 {#if filteredSandboxes.length === 0}
                   <div class="sidebar-empty-hint">No sandboxes match search.</div>
@@ -2197,6 +2302,96 @@
 
   .modal-btn.secondary:hover {
     background-color: #2d3748;
+  }
+
+  .move-modal {
+    width: 400px;
+  }
+
+  .move-folder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .move-folder-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: none;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: #9ca3af;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+    width: 100%;
+    text-align: left;
+  }
+
+  .move-folder-option:hover {
+    background-color: #1a1a24;
+    border-color: #4a5568;
+    color: #edf2f7;
+  }
+
+  .move-folder-option .v-folder-icon {
+    color: #ff8c73;
+    flex-shrink: 0;
+  }
+
+  .move-folder-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .move-folder-count {
+    font-size: 11px;
+    color: #6b7280;
+    flex-shrink: 0;
+  }
+
+  .move-new-folder-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid #1a1a26;
+  }
+
+  .create-folder-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .root-sandbox-drop-zone {
+    min-height: 24px;
+  }
+
+  .root-drop-hint {
+    font-size: 11px;
+    color: #4a5568;
+    text-align: center;
+    padding: 6px;
+    border: 1px dashed #2d3748;
+    border-radius: 4px;
+    margin: 4px 8px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .root-drop-hint:hover,
+  .root-drop-hint--active {
+    border-color: #ff5a3655;
+    color: #9ca3af;
   }
 
   .guide-modal {
