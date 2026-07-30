@@ -1,10 +1,11 @@
-# CrabCode
+<h1 align="center"><img src="frontend/public/appicon.png" width="48" height="48" style="vertical-align: middle;">&nbsp; CrabCode</h1>
 
-![CrabCode](frontend/public/appicon.png)
+<p align="center">
+  <b>Lightweight dark-mode desktop editor & laboratory</b><br>
+  Built on Go, Svelte, and Wails
+</p>
 
-CrabCode is a lightweight, dark-mode desktop editor and laboratory designed for organizing development projects, maintaining rich learning journals, and conducting isolated scratchpad experiments.
-
-Built on Go, Svelte, and Wails, CrabCode features a dual-engine layout that combines local directory management with a highly portable, SQLite-backed workspace filesystem.
+CrabCode is a lightweight, dark-mode desktop editor and laboratory designed for organizing development projects, maintaining rich learning journals, and conducting isolated scratchpad experiments. It features a dual-engine layout that combines local directory management with a highly portable, SQLite-backed workspace filesystem.
 
 ---
 
