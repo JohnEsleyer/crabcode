@@ -535,6 +535,47 @@
     }
   }
 
+  async function refreshWorkspaceTree() {
+    if (!currentFolder) return;
+    try {
+      const contents = await ListDirectory(currentFolder);
+      sortNodes(contents);
+      fileTree = contents;
+      for (const [path, expanded] of Object.entries(expandedFolders)) {
+        if (expanded) {
+          const subContents = await ListDirectory(path);
+          sortNodes(subContents);
+          folderContents[path] = subContents;
+        }
+      }
+    } catch (_) {}
+  }
+
+  async function refreshSandboxFiles() {
+    if (!activeSandboxId) return;
+    try {
+      const files = await GetSandboxFiles(activeSandboxId);
+      sandboxFilesList = files.filter(f => !f.isDir);
+      if (activeSandboxFilePath) {
+        const stillExists = sandboxFilesList.find(f => f.path === activeSandboxFilePath);
+        if (!stillExists) {
+          activeSandboxFilePath = '';
+          activeSandboxFileName = '';
+          activeSandboxFileContent = '';
+          lastSavedSandboxFileContent = '';
+        }
+      }
+      if (!activeSandboxFilePath && sandboxFilesList.length > 0) {
+        const firstFile = sandboxFilesList[0];
+        activeSandboxFilePath = firstFile.path;
+        activeSandboxFileName = firstFile.path.split('/').pop() || firstFile.path;
+        activeSandboxFileContent = firstFile.content;
+        lastSavedSandboxFileContent = firstFile.content;
+        updateSandboxEditor(firstFile.content, activeSandboxFileName);
+      }
+    } catch (_) {}
+  }
+
   // VIRTUAL SANDBOX FOLDER CREATION & MOVEMENT
   async function createVirtualFolder() {
     const folderName = await openPrompt('New Virtual Folder', 'Game Engine Experiments');
@@ -733,21 +774,33 @@
   }
 
   async function loadSandboxFiles() {
+    if (!activeSandboxId) return;
     try {
       const files = await GetSandboxFiles(activeSandboxId);
       sandboxFilesList = files.filter(f => !f.isDir);
-      if (sandboxFilesList.length > 0) {
+      if (activeSandboxFilePath) {
+        const stillExists = sandboxFilesList.find(f => f.path === activeSandboxFilePath);
+        if (stillExists) {
+          const updated = sandboxFilesList.find(f => f.path === activeSandboxFilePath);
+          if (updated && updated.content !== activeSandboxFileContent && activeSandboxFileContent === lastSavedSandboxFileContent) {
+            activeSandboxFileContent = updated.content;
+            lastSavedSandboxFileContent = updated.content;
+            updateSandboxEditor(updated.content, activeSandboxFileName);
+          }
+        } else {
+          activeSandboxFilePath = '';
+          activeSandboxFileName = '';
+          activeSandboxFileContent = '';
+          lastSavedSandboxFileContent = '';
+        }
+      }
+      if (!activeSandboxFilePath && sandboxFilesList.length > 0) {
         const firstFile = sandboxFilesList[0];
         activeSandboxFilePath = firstFile.path;
         activeSandboxFileName = firstFile.path.split('/').pop() || firstFile.path;
         activeSandboxFileContent = firstFile.content;
         lastSavedSandboxFileContent = firstFile.content;
         updateSandboxEditor(firstFile.content, activeSandboxFileName);
-      } else {
-        activeSandboxFilePath = '';
-        activeSandboxFileName = '';
-        activeSandboxFileContent = '';
-        lastSavedSandboxFileContent = '';
       }
     } catch (err) {
       addToast(String(err), 'error');
@@ -768,7 +821,7 @@
     if (!name) return;
     try {
       await SaveSandboxFile(activeSandboxId, name, '# virtual environment file\n', false);
-      await loadSandboxFiles();
+      await refreshSandboxFiles();
       const created = sandboxFilesList.find(f => f.path === name);
       if (created) await selectSandboxFile(created);
       addToast('Sandbox file added', 'success');
@@ -787,7 +840,7 @@
         activeSandboxFileContent = '';
         lastSavedSandboxFileContent = '';
       }
-      await loadSandboxFiles();
+      await refreshSandboxFiles();
       addToast('Sandbox file deleted', 'success');
     } catch (err) {
       addToast(String(err), 'error');
@@ -800,7 +853,7 @@
       if (activeSandboxFilePath && activeSandboxFileUnsaved) {
         await SaveSandboxFile(activeSandboxId, activeSandboxFilePath, activeSandboxFileContent, false);
         lastSavedSandboxFileContent = activeSandboxFileContent;
-        await loadSandboxFiles();
+        await refreshSandboxFiles();
       }
 
       if (activeSandboxConfigUnsaved) {
@@ -1147,6 +1200,8 @@
     }
   }
 
+  let refreshInterval = null;
+
   onMount(async () => {
     loadGlobalConfig();
     window.addEventListener('keydown', handleKeyDown);
@@ -1166,6 +1221,10 @@
       if (data.id.startsWith('runner_')) {
         if (data.status === '0') {
           consoleStatus = 'Finished';
+          setTimeout(() => {
+            if (activeTab === 'workspace') refreshWorkspaceTree();
+            if (activeTab === 'sandboxes' && activeSandboxId) refreshSandboxFiles();
+          }, 300);
         } else {
           consoleStatus = 'Error';
           consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Process exited: ${data.status}]`, type: 'error' }];
@@ -1181,12 +1240,22 @@
       }
     });
 
+    refreshInterval = setInterval(() => {
+      if (activeTab === 'workspace' && currentFolder) {
+        refreshWorkspaceTree();
+      }
+      if (activeTab === 'sandboxes' && activeSandboxId) {
+        refreshSandboxFiles();
+      }
+    }, 1500);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
   });
 
   onDestroy(() => {
+    if (refreshInterval) clearInterval(refreshInterval);
     if (workspaceView) workspaceView.destroy();
     if (sandboxView) sandboxView.destroy();
   });
