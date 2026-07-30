@@ -95,3 +95,10 @@ type FileNode struct {
 	Path  string `json:"path"`
 	IsDir bool   `json:"isDir"`
 }
+
+// WorkspaceInitInfo represents initialization status of a workspace folder
+type WorkspaceInitInfo struct {
+	Path       string `json:"path"`
+	HasDotCrab bool   `json:"hasDotCrab"`
+	Exists     bool   `json:"exists"`
+}

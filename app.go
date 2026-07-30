@@ -21,6 +21,7 @@ type App struct {
 	processMutex    sync.Mutex
 	workspacePath   string
 	db              *sql.DB
+	cliPath         string
 }
 
 // NewApp creates a new App application struct

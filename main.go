@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -14,6 +15,9 @@ var assets embed.FS
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
+	if len(os.Args) > 1 {
+		app.cliPath = os.Args[1]
+	}
 
 	// Create application with options
 	err := wails.Run(&options.App{

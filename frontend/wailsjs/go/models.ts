@@ -298,6 +298,22 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class WorkspaceInitInfo {
+	    path: string;
+	    hasDotCrab: boolean;
+	    exists: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceInitInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.hasDotCrab = source["hasDotCrab"];
+	        this.exists = source["exists"];
+	    }
+	}
 
 }
 

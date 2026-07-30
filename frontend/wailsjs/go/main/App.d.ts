@@ -22,6 +22,8 @@ export function DeleteSandbox(arg1:string):Promise<void>;
 
 export function DeleteSandboxFile(arg1:string,arg2:string):Promise<void>;
 
+export function GetCLIOpenPath():Promise<string>;
+
 export function GetCrabRootDirectory():Promise<string>;
 
 export function GetGlobalSettings():Promise<main.GlobalSettings>;
@@ -46,6 +48,8 @@ export function InitTemplates():Promise<void>;
 
 export function InitializeCrabFolder(arg1:string):Promise<void>;
 
+export function InitializeDotCrab(arg1:string):Promise<void>;
+
 export function InitializeEnvironment(arg1:string):Promise<void>;
 
 export function IsDirectoryEmpty(arg1:string):Promise<boolean>;
@@ -63,6 +67,8 @@ export function ReadFile(arg1:string):Promise<string>;
 export function RenamePath(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSandbox(arg1:string,arg2:string):Promise<void>;
+
+export function ResolveAndCheckWorkspace(arg1:string,arg2:string):Promise<main.WorkspaceInitInfo>;
 
 export function RunCommand(arg1:string,arg2:string,arg3:Array<string>,arg4:string):Promise<void>;
 

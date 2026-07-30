@@ -42,6 +42,10 @@ export function DeleteSandboxFile(arg1, arg2) {
   return window['go']['main']['App']['DeleteSandboxFile'](arg1, arg2);
 }
 
+export function GetCLIOpenPath() {
+  return window['go']['main']['App']['GetCLIOpenPath']();
+}
+
 export function GetCrabRootDirectory() {
   return window['go']['main']['App']['GetCrabRootDirectory']();
 }
@@ -90,6 +94,10 @@ export function InitializeCrabFolder(arg1) {
   return window['go']['main']['App']['InitializeCrabFolder'](arg1);
 }
 
+export function InitializeDotCrab(arg1) {
+  return window['go']['main']['App']['InitializeDotCrab'](arg1);
+}
+
 export function InitializeEnvironment(arg1) {
   return window['go']['main']['App']['InitializeEnvironment'](arg1);
 }
@@ -124,6 +132,10 @@ export function RenamePath(arg1, arg2) {
 
 export function RenameSandbox(arg1, arg2) {
   return window['go']['main']['App']['RenameSandbox'](arg1, arg2);
+}
+
+export function ResolveAndCheckWorkspace(arg1, arg2) {
+  return window['go']['main']['App']['ResolveAndCheckWorkspace'](arg1, arg2);
 }
 
 export function RunCommand(arg1, arg2, arg3, arg4) {

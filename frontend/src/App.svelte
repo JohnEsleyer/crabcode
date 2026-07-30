@@ -32,7 +32,10 @@
     SaveGlobalSettings,
     IsDirectoryEmpty,
     InitializeCrabFolder,
-    GetTemplates
+    GetTemplates,
+    ResolveAndCheckWorkspace,
+    InitializeDotCrab,
+    GetCLIOpenPath
   } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import FileNode from './FileNode.svelte';
@@ -122,6 +125,9 @@
   let showInitEnvModal = $state(false);
   let isInitializingEnv = $state(false);
   let isEnvInitialized = $state(true);
+
+  let showInitCrabModal = $state(false);
+  let pendingInitCrabPath = $state('');
 
   let workspaceEditorContainer = $state(null);
   let sandboxEditorContainer = $state(null);
@@ -385,32 +391,76 @@
     }
   }
 
+  async function openWorkspaceByPath(folderPath) {
+    try {
+      currentFolder = folderPath;
+      const workspaceInfo = await OpenWorkspace(folderPath);
+      sandboxesList = workspaceInfo.sandboxes || [];
+
+      const foldersSet = new Set(sandboxesList.map(s => s.folder).filter(Boolean));
+      virtualFolders = Array.from(foldersSet);
+
+      const contents = await ListDirectory(folderPath);
+      sortNodes(contents);
+      fileTree = contents;
+      expandedFolders = {};
+      folderContents = {};
+      activeFilePath = '';
+      activeFileName = '';
+      editorContent = '';
+      lastSavedContent = '';
+      activeTab = 'workspace';
+      statusMessage = 'Opened project: ' + folderPath;
+      addToast('Workspace loaded successfully', 'success');
+
+      if (workspaceTerminals.length === 0) {
+        const wsTermId = createWorkspaceTerminal('bash', folderPath);
+        try { await StartTerminalSession(wsTermId, folderPath); } catch (_) {}
+      }
+    } catch (err) {
+      statusMessage = 'Workspace error: ' + err;
+      addToast(String(err), 'error');
+    }
+  }
+
+  async function handleCodeCommand(targetArg, baseDir) {
+    try {
+      const initInfo = await ResolveAndCheckWorkspace(targetArg, baseDir);
+      if (!initInfo || !initInfo.exists) {
+        addToast('Directory does not exist', 'error');
+        return;
+      }
+
+      if (initInfo.hasDotCrab) {
+        await openWorkspaceByPath(initInfo.path);
+      } else {
+        pendingInitCrabPath = initInfo.path;
+        showInitCrabModal = true;
+      }
+    } catch (err) {
+      addToast('Failed to resolve workspace path: ' + String(err), 'error');
+    }
+  }
+
+  async function confirmInitCrabAndOpen() {
+    if (!pendingInitCrabPath) return;
+    const pathToOpen = pendingInitCrabPath;
+    showInitCrabModal = false;
+    pendingInitCrabPath = '';
+    try {
+      await InitializeDotCrab(pathToOpen);
+      await openWorkspaceByPath(pathToOpen);
+      addToast('.crab directory initialized', 'success');
+    } catch (err) {
+      addToast('Failed to initialize .crab directory: ' + String(err), 'error');
+    }
+  }
+
   async function chooseFolder() {
     try {
       const folder = await SelectFolder();
       if (folder) {
-        currentFolder = folder;
-        const workspaceInfo = await OpenWorkspace(folder);
-        sandboxesList = workspaceInfo.sandboxes || [];
-
-        const foldersSet = new Set(sandboxesList.map(s => s.folder).filter(Boolean));
-        virtualFolders = Array.from(foldersSet);
-
-        const contents = await ListDirectory(folder);
-        sortNodes(contents);
-        fileTree = contents;
-        expandedFolders = {};
-        folderContents = {};
-        activeFilePath = '';
-        activeFileName = '';
-        editorContent = '';
-        lastSavedContent = '';
-        statusMessage = 'Opened project: ' + folder;
-        addToast('Workspace loaded successfully', 'success');
-        if (workspaceTerminals.length === 0) {
-          const wsTermId = createWorkspaceTerminal('shell', 'bash');
-          try { await StartTerminalSession(wsTermId, folder); } catch (_) {}
-        }
+        await handleCodeCommand('.', folder);
       }
     } catch (err) {
       statusMessage = 'Workspace error: ' + err;
@@ -674,9 +724,9 @@
     await loadSandboxFiles();
 
     if (sandboxTerminals.length === 0) {
-      const sbTermId = createSandboxTerminal('shell', 'bash');
       try {
         const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+        const sbTermId = createSandboxTerminal('bash', sandboxDir);
         await StartTerminalSession(sbTermId, sandboxDir);
       } catch (_) {}
     }
@@ -803,17 +853,18 @@
     }
   }
 
-  function createWorkspaceTerminal(title = 'bash') {
+  function createWorkspaceTerminal(title = 'bash', dir = '') {
     const id = 'shell_ws_' + Date.now();
-    const term = { id, logs: [], isRunning: true, title, inputBuffer: '' };
+    const targetDir = dir || currentFolder || '';
+    const term = { id, logs: [], isRunning: true, title, inputBuffer: '', dir: targetDir };
     workspaceTerminals = [...workspaceTerminals, term];
     activeWorkspaceTermId = id;
     return id;
   }
 
-  function createSandboxTerminal(title = 'bash') {
+  function createSandboxTerminal(title = 'bash', dir = '') {
     const id = 'shell_sb_' + Date.now();
-    const term = { id, logs: [], isRunning: true, title, inputBuffer: '' };
+    const term = { id, logs: [], isRunning: true, title, inputBuffer: '', dir: dir };
     sandboxTerminals = [...sandboxTerminals, term];
     activeSandboxTermId = id;
     return id;
@@ -845,12 +896,24 @@
     }
   }
 
-  function sendTerminalInput() {
+  async function sendTerminalInput() {
     const term = activeTab === 'workspace' ? activeWorkspaceTerm : activeSandboxTerm;
     if (!term || !term.inputBuffer) return;
-    const input = term.inputBuffer;
+    const input = term.inputBuffer.trim();
+    const termDir = term.dir || currentFolder || '';
+
+    if (input === 'code' || input.startsWith('code ')) {
+      term.logs = [...term.logs, '$ ' + input];
+      term.inputBuffer = '';
+      const parts = input.split(/\s+/);
+      const targetArg = parts.slice(1).join(' ') || '.';
+      await handleCodeCommand(targetArg, termDir);
+      scrollToConsoleBottom();
+      return;
+    }
+
     WriteTerminalInput(term.id, input);
-    term.logs.push('$ ' + input);
+    term.logs = [...term.logs, '$ ' + input];
     if (term.logs.length > 1000) term.logs = term.logs.slice(-1000);
     term.inputBuffer = '';
     scrollToConsoleBottom();
@@ -1084,9 +1147,16 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     loadGlobalConfig();
     window.addEventListener('keydown', handleKeyDown);
+
+    try {
+      const cliPath = await GetCLIOpenPath();
+      if (cliPath) {
+        await handleCodeCommand(cliPath, '');
+      }
+    } catch (_) {}
 
     EventsOn('terminal_output', (data) => {
       queueTerminalOutput(data);
@@ -1127,6 +1197,7 @@
     if (modal.show) modal.onCancel();
     if (showCreateSandboxModal) showCreateSandboxModal = false;
     if (showInitEnvModal) showInitEnvModal = false;
+    if (showInitCrabModal) showInitCrabModal = false;
   }
 }} />
 
@@ -1157,6 +1228,28 @@
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={modal.onCancel}>Cancel</button>
         <button class="modal-btn primary" onclick={() => modal.onConfirm(modal.value)}>Confirm</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showInitCrabModal}
+  <div class="modal-backdrop" onclick={() => showInitCrabModal = false} role="presentation">
+    <div class="modal-box guide-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">Initialize .crab Workspace</div>
+      <div class="modal-body guide-body">
+        <p>
+          The directory <code>{pendingInitCrabPath}</code> is not initialized with a <code>.crab</code> workspace folder.
+        </p>
+        <p>
+          Would you like to initialize <code>.crab</code> in this directory to open it in CrabCode?
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showInitCrabModal = false}>Cancel</button>
+        <button class="modal-btn primary" onclick={confirmInitCrabAndOpen}>
+          Initialize & Open Workspace
+        </button>
       </div>
     </div>
   </div>
@@ -1270,7 +1363,6 @@
           <PanelLeft size={16} />
         </button>
       {/if}
-      <span class="app-brand">CrabCode</span>
       <button class="open-btn compact" onclick={chooseFolder}>
         <FolderOpen size={14} />
         <span>Select Workspace</span>
@@ -1418,7 +1510,7 @@
               onSendTerminalInput={sendTerminalInput}
               onCloseTerminal={closeWorkspaceTerminal}
               onAddTerminal={async () => {
-                const id = createWorkspaceTerminal('bash');
+                const id = createWorkspaceTerminal('bash', currentFolder);
                 try { await StartTerminalSession(id, currentFolder); } catch (_) {}
               }}
               onClearConsole={() => { consoleLogs = []; consoleStatus = 'Ready'; }}
@@ -1647,9 +1739,9 @@
                 onSendTerminalInput={sendTerminalInput}
                 onCloseTerminal={closeSandboxTerminal}
                 onAddTerminal={async () => {
-                  const id = createSandboxTerminal('bash');
                   try {
                     const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+                    const id = createSandboxTerminal('bash', sandboxDir);
                     await StartTerminalSession(id, sandboxDir);
                   } catch (_) {}
                 }}
@@ -1727,17 +1819,6 @@
     align-items: center;
     gap: 12px;
     min-width: 0;
-  }
-
-  .app-brand {
-    font-size: 15px;
-    font-weight: 800;
-    color: #ff5a36;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
 
   .sidebar-toggle-btn {

@@ -74,3 +74,53 @@ func (a *App) DeletePath(path string) error {
 func (a *App) RenamePath(oldPath, newPath string) error {
 	return os.Rename(oldPath, newPath)
 }
+
+// ResolveAndCheckWorkspace checks whether target directory exists and contains a .crab folder
+func (a *App) ResolveAndCheckWorkspace(dir string, baseDir string) (*WorkspaceInitInfo, error) {
+	target := dir
+	if target == "" || target == "." {
+		target = baseDir
+	} else if !filepath.IsAbs(target) {
+		if baseDir != "" {
+			target = filepath.Join(baseDir, target)
+		}
+	}
+
+	absPath, err := filepath.Abs(target)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, os.ErrNotExist
+	}
+
+	dotCrabPath := filepath.Join(absPath, ".crab")
+	crabInfo, crabErr := os.Stat(dotCrabPath)
+	hasDotCrab := crabErr == nil && crabInfo.IsDir()
+
+	return &WorkspaceInitInfo{
+		Path:       absPath,
+		HasDotCrab: hasDotCrab,
+		Exists:     true,
+	}, nil
+}
+
+// InitializeDotCrab creates the .crab directory inside the target path
+func (a *App) InitializeDotCrab(dir string) error {
+	dotCrabPath := filepath.Join(dir, ".crab")
+	return os.MkdirAll(dotCrabPath, 0755)
+}
+
+// GetCLIOpenPath returns and clears any workspace path passed via command line arguments
+func (a *App) GetCLIOpenPath() string {
+	a.processMutex.Lock()
+	defer a.processMutex.Unlock()
+	p := a.cliPath
+	a.cliPath = ""
+	return p
+}
