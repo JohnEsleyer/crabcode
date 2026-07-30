@@ -1,6 +1,8 @@
 # CrabCode
 
-CrabCode is a lightweight, dark-mode desktop editor and laboratory designed for organizing development projects, maintaining rich learning journals, and conducting isolated scratchpad experiments. 
+![CrabCode](frontend/public/appicon.png)
+
+CrabCode is a lightweight, dark-mode desktop editor and laboratory designed for organizing development projects, maintaining rich learning journals, and conducting isolated scratchpad experiments.
 
 Built on Go, Svelte, and Wails, CrabCode features a dual-engine layout that combines local directory management with a highly portable, SQLite-backed workspace filesystem.
 
@@ -9,9 +11,9 @@ Built on Go, Svelte, and Wails, CrabCode features a dual-engine layout that comb
 ## Key Features
 
 1. **Integrated Workspace Editor**: Standard file-tree manager for opening, editing, and executing files (Python, Go, Node.js, Rust, HTML, CSS, JSON) within your local physical directory.
-2. **Obsidian-Style Notes (SQLite-Backed)**: Local markdown notes stored entirely inside a workspace SQLite database (`.crab/crab.db`). This allows notebooks to be easily transported, backed up, and versioned as single portable binary files.
+2. **CLI Workspace Opening**: Run `crabcode .` or `crabcode /path/to/dir` from your terminal to open a workspace. If the directory lacks a `.crab` folder, CrabCode prompts to initialize it. Inside the integrated terminal, use `code .` or `code /path/to/dir` the same way.
 3. **Database-Backed Sandboxes**: Virtual mini-environments saved directly inside the workspace SQLite database. Experiment without cluttering your local drive. Running a sandbox compiles and extracts virtual assets temporarily before execution.
-4. **Customizable Split-Pane Layout**: Side-by-side editing mode. Toggle a split pane inside your main Workspace tab to edit or preview SQLite Markdown Notes, or work on virtual Sandbox files alongside your local physical code.
+4. **Customizable Split-Pane Layout**: Side-by-side editing mode with Markdown notes, HTML canvas, and YAML config panels alongside your sandbox code.
 5. **Dynamic Root Bootstrap Configuration**: Solve storage constraints by configuring CrabCode to run entirely off an external hard drive. Setting a custom path routes settings, toolchain environments, and scratchpads outside your primary system disk.
 
 ---
@@ -19,11 +21,21 @@ Built on Go, Svelte, and Wails, CrabCode features a dual-engine layout that comb
 ## Architectural Layout
 
 ```
-├── main.go                     # Wails application entry point
-├── app.go                      # Core backend API (Go-Svelte bridge, database, processes)
+├── main.go                     # Wails application entry point (CLI arg parsing)
+├── app.go                      # Core backend API (database, process management)
+├── fs_operations.go            # File system ops (read, write, resolve workspace)
+├── notes.go                    # SQLite-backed Markdown notes CRUD
+├── sandboxes.go                # Virtual sandbox CRUD and execution
+├── runner.go                   # Command runner and sandbox runtime
+├── settings.go                 # Global settings persistence
+├── templates.go                # Template engine for sandbox scaffolding
+├── terminal.go                 # Terminal session management (shell, stdin/stdout)
+├── types.go                    # Shared type definitions
 └── frontend/
     ├── src/
     │   ├── App.svelte          # Reactive Svelte interface & CodeMirror integrations
+    │   ├── App.svelte          # Reactive Svelte interface & CodeMirror integrations
+    │   ├── TerminalDrawer.svelte # Multi-terminal drawer with resize
     │   ├── FileNode.svelte     # Recursive component for directory tree rendering
     │   └── main.js             # Frontend bootloader
     └── wailsjs/                # Auto-generated Go-to-Frontend bindings
@@ -84,7 +96,19 @@ CREATE TABLE IF NOT EXISTS sandbox_files (
 
 ## Prerequisites & Installation
 
-To run or build CrabCode from source, ensure your machine satisfies the following conditions:
+### Install from Pre-built Binary
+
+```bash
+# Copy the binary to your PATH
+cp build/bin/crabcode ~/.local/bin/
+# Install desktop icon and launcher
+cp build/appicon.png ~/.local/share/icons/hicolor/1024x1024/apps/crabcode.png
+gtk-update-icon-cache ~/.local/share/icons/hicolor
+```
+
+### Build from Source
+
+Ensure your machine satisfies the following conditions:
 
 * **Go**: Version 1.20 or newer
 * **Node.js & npm**: For Svelte frontend compilation
@@ -92,8 +116,6 @@ To run or build CrabCode from source, ensure your machine satisfies the followin
   ```bash
   go install github.com/wailsapp/wails/v2/cmd/wails@latest
   ```
-
-### Development Environment Setup
 
 1. **Clone the repository**:
    ```bash
@@ -104,20 +126,31 @@ To run or build CrabCode from source, ensure your machine satisfies the followin
    ```bash
    go mod tidy
    ```
-3. **Run in development mode** (launches hot-reloading window):
+3. **Build production binary**:
    ```bash
-   wails dev
+   wails build
    ```
-
-### Building the Application
-
-Compile a production-ready, optimized native binary for your active operating system:
-
-```bash
-wails build
-```
+   The binary is output to `build/bin/crabcode`.
 
 ---
+
+## CLI Usage
+
+Open a workspace directory from your terminal:
+
+```bash
+crabcode .                    # Open current directory
+crabcode /path/to/project     # Open specific directory
+```
+
+If the target directory does not contain a `.crab` folder, CrabCode will prompt you to initialize one before opening.
+
+Inside CrabCode's integrated terminal, you can use `code` the same way:
+
+```bash
+code .                        # Open current directory as workspace
+code /path/to/project         # Open specific directory
+```
 
 ## Configuration & Usage
 
