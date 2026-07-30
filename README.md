@@ -1,7 +1,7 @@
 <h1 align="center"><img src="frontend/public/appicon.png" width="48" height="48" style="vertical-align: middle;">&nbsp; CrabCode</h1>
 
 <p align="center">
-  <b>Lightweight dark-mode desktop editor & laboratory</b><br>
+  <b>Lightweight code editor & laboratory</b><br>
   Built on Go, Svelte, and Wails
 </p>
 
