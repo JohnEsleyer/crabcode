@@ -76,6 +76,7 @@ export namespace main {
 	    name: string;
 	    version: string;
 	    environment: string;
+	    envDir: string;
 	    iconColor: string;
 	    setup: SetupStep[];
 	    envVars: Record<string, string>;
@@ -93,6 +94,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.version = source["version"];
 	        this.environment = source["environment"];
+	        this.envDir = source["envDir"];
 	        this.iconColor = source["iconColor"];
 	        this.setup = this.convertValues(source["setup"], SetupStep);
 	        this.envVars = source["envVars"];
@@ -178,6 +180,7 @@ export namespace main {
 	    configYaml: string;
 	    markdownNote: string;
 	    htmlNote: string;
+	    folder: string;
 	    createdAt: string;
 	    updatedAt: string;
 	
@@ -192,6 +195,7 @@ export namespace main {
 	        this.configYaml = source["configYaml"];
 	        this.markdownNote = source["markdownNote"];
 	        this.htmlNote = source["htmlNote"];
+	        this.folder = source["folder"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }

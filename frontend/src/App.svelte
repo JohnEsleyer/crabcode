@@ -8,15 +8,11 @@
     SaveFile,
     CreateFile,
     CreateDirectory,
-    DeletePath,
-    RenamePath,
     OpenWorkspace,
-    GetNotes,
-    CreateNote,
-    SaveNote,
-    DeleteNote,
     GetSandboxes,
     CreateSandbox,
+    CreateSandboxInFolder,
+    MoveSandbox,
     RenameSandbox,
     DeleteSandbox,
     SaveSandboxConfig,
@@ -24,9 +20,14 @@
     GetSandboxFiles,
     SaveSandboxFile,
     DeleteSandboxFile,
+    GetSandboxDirectory,
     RunSandbox,
     RunCommand,
     StopCommand,
+    StartTerminalSession,
+    WriteTerminalInput,
+    IsEnvironmentInitialized,
+    InitializeEnvironment,
     GetGlobalSettings,
     SaveGlobalSettings,
     IsDirectoryEmpty,
@@ -35,18 +36,18 @@
   } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import FileNode from './FileNode.svelte';
-  import { onMount, onDestroy } from 'svelte';
+  import TerminalDrawer from './TerminalDrawer.svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import {
     FolderOpen, FilePlus, FolderPlus, Play, Square,
-    Terminal, FileText, Settings, Database, BookOpen, Plus, Trash2, Columns, Check,
-    PanelLeft, ChevronLeft, ChevronRight, Maximize2, Minimize2,
-    Code2, Eye, Edit3, HelpCircle, Save, Sparkles, FileCode, Layers
+    Terminal, Settings, Database, BookOpen, Plus, Trash2, Columns, Check,
+    PanelLeft, ChevronLeft, ChevronDown, ChevronRight, Save, Sparkles, FileCode, Layers, Eye, Edit3, Folder, FolderPlus as AddFolderIcon, FolderInput
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState, Compartment } from '@codemirror/state';
   import { keymap } from '@codemirror/view';
-  import { indentWithTab, undo, redo, undoDepth, redoDepth } from '@codemirror/commands';
+  import { indentWithTab, undoDepth, redoDepth } from '@codemirror/commands';
   import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
   import { tags as t } from '@lezer/highlight';
 
@@ -72,21 +73,9 @@
   let activeFileName = $state('');
   let editorContent = $state('');
   let lastSavedContent = $state('');
-  let isSaving = $state(false);
   let statusMessage = $state('Ready');
 
   let showSidebar = $state(true);
-
-  let isSplitPane = $state(false);
-  let splitPaneType = $state('notes');
-
-  let notesList = $state([]);
-  let activeNoteId = $state('');
-  let activeNoteTitle = $state('');
-  let activeNoteContent = $state('');
-  let lastSavedNoteContent = $state('');
-  let noteSearchQuery = $state('');
-  let isMarkdownEditing = $state(true);
 
   let sandboxesList = $state([]);
   let activeSandboxId = $state('');
@@ -97,6 +86,11 @@
   let activeSandboxHTMLNote = $state('');
   let lastSavedSandboxMarkdownNote = $state('');
   let lastSavedSandboxHTMLNote = $state('');
+
+  // Sandbox File System State
+  let sandboxSearchQuery = $state('');
+  let virtualFolders = $state([]);
+  let expandedVirtualFolders = $state({});
 
   let showSandboxExplorer = $state(true);
   let showSandboxSplit = $state(true);
@@ -115,36 +109,49 @@
 
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
-  let showGuideModal = $state(false);
   let showCreateSandboxModal = $state(false);
   let newSandboxName = $state('');
+  let selectedSandboxFolder = $state('');
   let selectedSandboxTemplate = $state('python');
   let availableTemplates = $state([]);
 
+  let showInitEnvModal = $state(false);
+  let isInitializingEnv = $state(false);
+  let isEnvInitialized = $state(true);
+
   let workspaceEditorContainer = $state(null);
-  let notesEditorContainer = $state(null);
   let sandboxEditorContainer = $state(null);
   let workspaceView = null;
-  let notesView = null;
   let sandboxView = null;
   const workspaceLanguageConf = new Compartment();
   const sandboxLanguageConf = new Compartment();
 
   let canUndo = $state(false);
   let canRedo = $state(false);
-  let consoleLogs = $state([]);
-  let isRunning = $state(false);
   let isConsoleOpen = $state(true);
-  let runningProcessId = $state('');
-  const processTracker = { id: '' };
 
-  let lineCount = $derived(editorContent.split('\n').length);
-  let charCount = $derived(editorContent.length);
-  let fileExtension = $derived(
-    activeFileName ? (activeFileName.split('.').pop() || '').toUpperCase() : 'TEXT'
+  // Multi-terminal state
+  let workspaceTerminals = $state([]);
+  let activeWorkspaceTermId = $state('');
+  let sandboxTerminals = $state([]);
+  let activeSandboxTermId = $state('');
+
+  let activeWorkspaceTerm = $derived(
+    workspaceTerminals.find(t => t.id === activeWorkspaceTermId) || null
   );
+  let activeSandboxTerm = $derived(
+    sandboxTerminals.find(t => t.id === activeSandboxTermId) || null
+  );
+  // Bottom Drawer State (Console vs Terminal)
+  let bottomMode = $state('console');
+  let consoleLogs = $state([]);
+  let consoleStatus = $state('Ready');
+  let isConsoleRunning = $state(false);
+  let activeRunnerId = $state('');
+
+  let isRunning = $derived(activeRunnerId !== '');
+
   let activeFileUnsaved = $derived(activeFilePath !== '' && editorContent !== lastSavedContent);
-  let activeNoteUnsaved = $derived(activeNoteId !== '' && activeNoteContent !== lastSavedNoteContent);
   let activeSandboxFileUnsaved = $derived(
     activeSandboxFilePath !== '' && activeSandboxFileContent !== lastSavedSandboxFileContent
   );
@@ -160,9 +167,24 @@
   let activeSandboxUnsaved = $derived(
     activeSandboxFileUnsaved || activeSandboxConfigUnsaved || activeSandboxNotesUnsaved
   );
-  let filteredNotes = $derived(
-    notesList.filter(n => n.title.toLowerCase().includes(noteSearchQuery.toLowerCase()))
+
+  // Chronologically ordered sandboxes filtered by search
+  let filteredSandboxes = $derived(
+    sandboxesList
+      .filter(s => s.name.toLowerCase().includes(sandboxSearchQuery.toLowerCase()) || (s.folder || '').toLowerCase().includes(sandboxSearchQuery.toLowerCase()))
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
   );
+
+  let folderGroupedSandboxes = $derived.by(() => {
+    const groups = { '': [] };
+    virtualFolders.forEach(f => { groups[f] = []; });
+    filteredSandboxes.forEach(s => {
+      const f = s.folder || '';
+      if (!groups[f]) groups[f] = [];
+      groups[f].push(s);
+    });
+    return groups;
+  });
 
   const crabCodeTheme = EditorView.theme({
     '&': { color: '#edf2f7', backgroundColor: '#14141a', height: '100%', width: '100%' },
@@ -220,7 +242,6 @@
       case 'html': case 'svelte': return html();
       case 'css': return css();
       case 'json': return json();
-      case 'yaml': case 'yml': return [];
       default: return [];
     }
   }
@@ -237,20 +258,6 @@
           editorContent = update.state.doc.toString();
           canUndo = undoDepth(update.state) > 0;
           canRedo = redoDepth(update.state) > 0;
-        }
-      })
-    ];
-  }
-
-  function buildNotesExtensions() {
-    return [
-      basicSetup,
-      keymap.of([indentWithTab]),
-      crabCodeTheme,
-      syntaxHighlighting(crabHighlightStyle),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          activeNoteContent = update.state.doc.toString();
         }
       })
     ];
@@ -277,16 +284,6 @@
       doc: content,
       extensions: buildWorkspaceExtensions(fileName)
     }));
-    canUndo = false;
-    canRedo = false;
-  }
-
-  function updateNotesEditor(content) {
-    if (!notesView) return;
-    notesView.setState(EditorState.create({
-      doc: content,
-      extensions: buildNotesExtensions()
-    }));
   }
 
   function updateSandboxEditor(content, fileName) {
@@ -299,11 +296,13 @@
 
   $effect(() => {
     if (workspaceEditorContainer && !workspaceView) {
+      const initialDoc = untrack(() => editorContent);
+      const initialName = untrack(() => activeFileName);
       workspaceView = new EditorView({
         parent: workspaceEditorContainer,
         state: EditorState.create({
-          doc: editorContent,
-          extensions: buildWorkspaceExtensions(activeFileName)
+          doc: initialDoc,
+          extensions: buildWorkspaceExtensions(initialName)
         })
       });
     } else if (!workspaceEditorContainer && workspaceView) {
@@ -313,47 +312,19 @@
   });
 
   $effect(() => {
-    if (notesEditorContainer && !notesView) {
-      notesView = new EditorView({
-        parent: notesEditorContainer,
-        state: EditorState.create({
-          doc: activeNoteContent,
-          extensions: buildNotesExtensions()
-        })
-      });
-    } else if (!notesEditorContainer && notesView) {
-      notesView.destroy();
-      notesView = null;
-    }
-  });
-
-  $effect(() => {
     if (sandboxEditorContainer && !sandboxView) {
+      const initialDoc = untrack(() => activeSandboxFileContent);
+      const initialName = untrack(() => activeSandboxFileName);
       sandboxView = new EditorView({
         parent: sandboxEditorContainer,
         state: EditorState.create({
-          doc: activeSandboxFileContent,
-          extensions: buildSandboxExtensions(activeSandboxFileName)
+          doc: initialDoc,
+          extensions: buildSandboxExtensions(initialName)
         })
       });
     } else if (!sandboxEditorContainer && sandboxView) {
       sandboxView.destroy();
       sandboxView = null;
-    }
-  });
-
-  $effect(() => {
-    if (modal.show) {
-      setTimeout(() => {
-        const el = document.querySelector('.modal-input');
-        if (el) el.focus();
-      }, 50);
-    }
-    if (showCreateSandboxModal) {
-      setTimeout(() => {
-        const el = document.querySelector('.sandbox-name-input');
-        if (el) el.focus();
-      }, 50);
     }
   });
 
@@ -416,8 +387,11 @@
       if (folder) {
         currentFolder = folder;
         const workspaceInfo = await OpenWorkspace(folder);
-        notesList = workspaceInfo.notes || [];
         sandboxesList = workspaceInfo.sandboxes || [];
+
+        const foldersSet = new Set(sandboxesList.map(s => s.folder).filter(Boolean));
+        virtualFolders = Array.from(foldersSet);
+
         const contents = await ListDirectory(folder);
         sortNodes(contents);
         fileTree = contents;
@@ -429,6 +403,10 @@
         lastSavedContent = '';
         statusMessage = 'Opened project: ' + folder;
         addToast('Workspace loaded successfully', 'success');
+        if (workspaceTerminals.length === 0) {
+          const wsTermId = createWorkspaceTerminal('shell', 'bash');
+          try { await StartTerminalSession(wsTermId, folder); } catch (_) {}
+        }
       }
     } catch (err) {
       statusMessage = 'Workspace error: ' + err;
@@ -452,7 +430,6 @@
 
   async function saveWorkspaceFile() {
     if (!activeFilePath) return;
-    isSaving = true;
     try {
       await SaveFile(activeFilePath, editorContent);
       lastSavedContent = editorContent;
@@ -460,8 +437,6 @@
       addToast('File saved', 'success');
     } catch (err) {
       addToast(String(err), 'error');
-    } finally {
-      isSaving = false;
     }
   }
 
@@ -506,78 +481,50 @@
     }
   }
 
-  async function selectNote(note) {
-    activeNoteId = note.id;
-    activeNoteTitle = note.title;
-    activeNoteContent = note.content;
-    lastSavedNoteContent = note.content;
-    isMarkdownEditing = false;
-    updateNotesEditor(note.content);
-  }
-
-  async function handleCreateNote() {
-    if (!currentFolder) {
-      addToast('Select a workspace first', 'error');
-      return;
-    }
-    const name = await openPrompt('New Note Title', 'Algorithms Design');
-    if (!name) return;
-    try {
-      const created = await CreateNote(name);
-      notesList = [created, ...notesList];
-      await selectNote(created);
-      addToast('Note created', 'success');
-    } catch (err) {
-      addToast(String(err), 'error');
+  // VIRTUAL SANDBOX FOLDER CREATION & MOVEMENT
+  async function createVirtualFolder() {
+    const folderName = await openPrompt('New Virtual Folder', 'Game Engine Experiments');
+    if (!folderName) return;
+    const cleanFolder = folderName.trim();
+    if (!cleanFolder) return;
+    if (!virtualFolders.includes(cleanFolder)) {
+      virtualFolders = [...virtualFolders, cleanFolder];
+      expandedVirtualFolders[cleanFolder] = true;
+      addToast(`Folder '${cleanFolder}' created`, 'success');
     }
   }
 
-  async function handleSaveNote() {
-    if (!activeNoteId) return;
+  async function moveSandboxToFolder(sandboxId) {
+    const folderName = await openPrompt('Move to Folder (leave blank for root)', 'Games');
+    if (folderName === null) return;
+    const targetFolder = folderName.trim();
     try {
-      await SaveNote(activeNoteId, activeNoteTitle, activeNoteContent);
-      lastSavedNoteContent = activeNoteContent;
-      const index = notesList.findIndex(n => n.id === activeNoteId);
-      if (index !== -1) {
-        notesList[index].title = activeNoteTitle;
-        notesList[index].content = activeNoteContent;
+      await MoveSandbox(sandboxId, targetFolder);
+      const si = sandboxesList.findIndex(s => s.id === sandboxId);
+      if (si !== -1) sandboxesList[si].folder = targetFolder;
+      if (targetFolder && !virtualFolders.includes(targetFolder)) {
+        virtualFolders = [...virtualFolders, targetFolder];
       }
-      addToast('Note saved to SQLite', 'success');
+      addToast('Sandbox moved', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
   }
 
-  async function handleDeleteNote(id) {
-    if (!confirm('Delete this note permanently?')) return;
-    try {
-      await DeleteNote(id);
-      notesList = notesList.filter(n => n.id !== id);
-      if (activeNoteId === id) {
-        activeNoteId = '';
-        activeNoteTitle = '';
-        activeNoteContent = '';
-        lastSavedNoteContent = '';
-      }
-      addToast('Note deleted', 'success');
-    } catch (err) {
-      addToast(String(err), 'error');
-    }
-  }
-
-  async function openCreateSandboxModal() {
+  async function openCreateSandboxModal(defaultFolder = '') {
     if (!currentFolder) {
       addToast('Select a workspace first', 'error');
       return;
     }
     newSandboxName = '';
+    selectedSandboxFolder = defaultFolder;
     try {
       availableTemplates = await GetTemplates();
       if (availableTemplates.length > 0) {
         selectedSandboxTemplate = availableTemplates[0].id;
       }
     } catch (err) {
-      addToast('Failed to load dynamic templates: ' + String(err), 'error');
+      addToast('Failed to load templates: ' + String(err), 'error');
     }
     showCreateSandboxModal = true;
   }
@@ -586,21 +533,13 @@
     const name = newSandboxName.trim() || 'Experiment';
     showCreateSandboxModal = false;
     try {
-      const sandbox = await CreateSandbox(name, selectedSandboxTemplate);
+      const sandbox = await CreateSandboxInFolder(name, selectedSandboxTemplate, selectedSandboxFolder);
       sandboxesList = [sandbox, ...sandboxesList];
       await selectSandbox(sandbox);
       addToast('Sandbox created', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
-  }
-
-  function cancelCreateSandbox() {
-    showCreateSandboxModal = false;
-  }
-
-  async function handleCreateSandbox() {
-    openCreateSandboxModal();
   }
 
   let renameTimer = null;
@@ -630,7 +569,31 @@
     }
   }
 
+  async function checkSandboxEnvState(sandboxId) {
+    try {
+      isEnvInitialized = await IsEnvironmentInitialized(sandboxId);
+    } catch (err) {
+      isEnvInitialized = false;
+    }
+  }
+
+  async function triggerInitializeEnvironment() {
+    if (!activeSandboxId) return;
+    isInitializingEnv = true;
+    try {
+      await InitializeEnvironment(activeSandboxId);
+      isEnvInitialized = true;
+      showInitEnvModal = false;
+      addToast('Shared project environment initialized', 'success');
+    } catch (err) {
+      addToast('Failed to initialize environment: ' + String(err), 'error');
+    } finally {
+      isInitializingEnv = false;
+    }
+  }
+
   async function selectSandbox(sandbox) {
+    if (activeSandboxId === sandbox.id) return;
     activeSandboxId = sandbox.id;
     activeSandboxName = sandbox.name;
     activeSandboxConfig = sandbox.configYaml;
@@ -644,7 +607,26 @@
     isSandboxMarkdownEditing = false;
     isSandboxHTMLEditing = false;
 
+    // Clear active file selection when switching sandboxes
+    activeSandboxFilePath = '';
+    activeSandboxFileName = '';
+    activeSandboxFileContent = '';
+    lastSavedSandboxFileContent = '';
+
+    await checkSandboxEnvState(sandbox.id);
+    if (!isEnvInitialized) {
+      showInitEnvModal = true;
+    }
+
     await loadSandboxFiles();
+
+    if (sandboxTerminals.length === 0) {
+      const sbTermId = createSandboxTerminal('shell', 'bash');
+      try {
+        const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+        await StartTerminalSession(sbTermId, sandboxDir);
+      } catch (_) {}
+    }
   }
 
   async function loadSandboxFiles() {
@@ -768,94 +750,144 @@
     }
   }
 
+  function createWorkspaceTerminal(title = 'bash') {
+    const id = 'shell_ws_' + Date.now();
+    const term = { id, logs: [], isRunning: true, title, inputBuffer: '' };
+    workspaceTerminals = [...workspaceTerminals, term];
+    activeWorkspaceTermId = id;
+    return id;
+  }
+
+  function createSandboxTerminal(title = 'bash') {
+    const id = 'shell_sb_' + Date.now();
+    const term = { id, logs: [], isRunning: true, title, inputBuffer: '' };
+    sandboxTerminals = [...sandboxTerminals, term];
+    activeSandboxTermId = id;
+    return id;
+  }
+
+  async function closeWorkspaceTerminal(id) {
+    const term = workspaceTerminals.find(t => t.id === id);
+    if (term && term.isRunning) {
+      try { await StopCommand(id); } catch (_) {}
+    }
+    workspaceTerminals = workspaceTerminals.filter(t => t.id !== id);
+    if (activeWorkspaceTermId === id) {
+      activeWorkspaceTermId = workspaceTerminals.length > 0
+        ? workspaceTerminals[workspaceTerminals.length - 1].id
+        : '';
+    }
+  }
+
+  async function closeSandboxTerminal(id) {
+    const term = sandboxTerminals.find(t => t.id === id);
+    if (term && term.isRunning) {
+      try { await StopCommand(id); } catch (_) {}
+    }
+    sandboxTerminals = sandboxTerminals.filter(t => t.id !== id);
+    if (activeSandboxTermId === id) {
+      activeSandboxTermId = sandboxTerminals.length > 0
+        ? sandboxTerminals[sandboxTerminals.length - 1].id
+        : '';
+    }
+  }
+
+  function sendTerminalInput() {
+    const term = activeTab === 'workspace' ? activeWorkspaceTerm : activeSandboxTerm;
+    if (!term || !term.inputBuffer) return;
+    const input = term.inputBuffer;
+    WriteTerminalInput(term.id, input);
+    term.logs.push('$ ' + input);
+    if (term.logs.length > 1000) term.logs = term.logs.slice(-1000);
+    term.inputBuffer = '';
+    scrollToConsoleBottom();
+  }
+
   async function runActiveCode() {
+    bottomMode = 'console';
+    isConsoleOpen = true;
+    consoleStatus = 'Executing...';
+    isConsoleRunning = true;
+
     if (activeTab === 'workspace') {
       if (!activeFilePath) return;
       if (activeFileUnsaved) await saveWorkspaceFile();
-      consoleLogs = [`[Running ${activeFileName}...]`];
-      isRunning = true;
-      isConsoleOpen = true;
-      runningProcessId = activeFilePath;
-      processTracker.id = activeFilePath;
+
+      const runnerId = 'runner_ws_' + Date.now();
+      activeRunnerId = runnerId;
+      consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Running ${activeFileName}...]`, type: 'info' }];
 
       const ext = activeFileName.split('.').pop().toLowerCase();
       let runnerCmd = '';
       let runnerArgs = [];
 
-      if (ext === 'py') {
-        runnerCmd = 'python3';
-        runnerArgs = [activeFilePath];
-      } else if (ext === 'js') {
-        runnerCmd = 'node';
-        runnerArgs = [activeFilePath];
-      } else if (ext === 'go') {
-        runnerCmd = 'go';
-        runnerArgs = ['run', activeFilePath];
-      } else if (ext === 'rs') {
-        runnerCmd = 'rustc';
-        runnerArgs = [activeFilePath, '-o', 'main', '&&', './main'];
-      } else if (ext === 'java') {
-        runnerCmd = 'java';
-        runnerArgs = [activeFilePath];
-      } else if (ext === 'cpp' || ext === 'c') {
-        runnerCmd = 'g++';
-        runnerArgs = [activeFilePath, '-o', 'main', '&&', './main'];
-      } else if (ext === 'ts') {
-        runnerCmd = 'npx';
-        runnerArgs = ['tsx', activeFilePath];
-      } else if (ext === 'dart') {
-        runnerCmd = 'dart';
-        runnerArgs = ['run', activeFilePath];
-      } else if (ext === 'sql') {
-        runnerCmd = 'sh';
-        runnerArgs = ['-c', `sqlite3 :memory: < "${activeFilePath}"`];
-      } else if (ext === 'surql') {
-        runnerCmd = 'sh';
-        runnerArgs = ['-c', `surreal sql --endpoint memory --ns test --db test < "${activeFilePath}"`];
-      } else {
-        consoleLogs = [...consoleLogs, `[Runner Error] No run configuration for ".${ext}" files.`];
-        isRunning = false;
-        runningProcessId = '';
-        processTracker.id = '';
+      if (ext === 'py') { runnerCmd = 'python3'; runnerArgs = [activeFilePath]; }
+      else if (ext === 'js') { runnerCmd = 'node'; runnerArgs = [activeFilePath]; }
+      else if (ext === 'go') { runnerCmd = 'go'; runnerArgs = ['run', activeFilePath]; }
+      else if (ext === 'rs') { runnerCmd = 'sh'; runnerArgs = ['-c', `rustc "${activeFilePath}" -o main && ./main`]; }
+      else if (ext === 'java') { runnerCmd = 'java'; runnerArgs = [activeFilePath]; }
+      else if (ext === 'cpp' || ext === 'c') { runnerCmd = 'sh'; runnerArgs = ['-c', `g++ "${activeFilePath}" -o main && ./main`]; }
+      else if (ext === 'ts') { runnerCmd = 'npx'; runnerArgs = ['tsx', activeFilePath]; }
+      else if (ext === 'sql') { runnerCmd = 'sh'; runnerArgs = ['-c', `sqlite3 :memory: < "${activeFilePath}"`]; }
+      else {
+        consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Runner Error] No run rule for ".${ext}" files.`, type: 'error' }];
+        consoleStatus = 'Error';
+        isConsoleRunning = false;
+        activeRunnerId = '';
+        scrollToConsoleBottom();
         return;
       }
 
       try {
-        await RunCommand(activeFilePath, runnerCmd, runnerArgs, getParentPath(activeFilePath) || currentFolder);
+        await RunCommand(runnerId, runnerCmd, runnerArgs, getParentPath(activeFilePath) || currentFolder);
       } catch (err) {
-        consoleLogs = [...consoleLogs, `[Error] ${String(err)}`];
-        isRunning = false;
-        runningProcessId = '';
-        processTracker.id = '';
+        consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Error] ${String(err)}`, type: 'error' }];
+        consoleStatus = 'Error';
+        isConsoleRunning = false;
+        activeRunnerId = '';
+        scrollToConsoleBottom();
       }
     } else if (activeTab === 'sandboxes') {
       if (!activeSandboxId) return;
-      consoleLogs = [`[Extracting and executing sandbox: ${activeSandboxName}...]`];
-      isRunning = true;
-      isConsoleOpen = true;
+
+      await checkSandboxEnvState(activeSandboxId);
+      if (!isEnvInitialized) {
+        showInitEnvModal = true;
+        consoleStatus = 'Uninitialized Env';
+        isConsoleRunning = false;
+        return;
+      }
+
+      const runnerId = 'runner_sb_' + Date.now();
+      activeRunnerId = runnerId;
+      consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Executing ${activeSandboxName} via YAML config...]`, type: 'info' }];
+
       try {
         await handleSaveSandbox();
-        const processId = await RunSandbox(activeSandboxId, activeSandboxFilePath);
-        runningProcessId = processId;
-        processTracker.id = processId;
+        await RunSandbox(runnerId, activeSandboxId, activeSandboxFilePath);
       } catch (err) {
-        consoleLogs = [...consoleLogs, `[Execution Error] ${String(err)}`];
-        isRunning = false;
-        runningProcessId = '';
-        processTracker.id = '';
+        if (String(err).includes("ENV_NOT_INITIALIZED")) {
+          showInitEnvModal = true;
+          consoleStatus = 'Uninitialized Env';
+        } else {
+          consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Execution Error] ${String(err)}`, type: 'error' }];
+          consoleStatus = 'Error';
+        }
+        isConsoleRunning = false;
+        activeRunnerId = '';
+        scrollToConsoleBottom();
       }
     }
   }
 
   async function stopActiveProcess() {
-    if (!runningProcessId) return;
-    try {
-      await StopCommand(runningProcessId);
-      isRunning = false;
-      consoleLogs = [...consoleLogs, '[Process stopped manually]'];
-    } catch (err) {
-      addToast(String(err), 'error');
+    if (activeRunnerId) {
+      try { await StopCommand(activeRunnerId); } catch (_) {}
     }
+    consoleLogs = [...consoleLogs, { time: Date.now(), text: '[Process stopped]', type: 'error' }];
+    consoleStatus = 'Stopped';
+    isConsoleRunning = false;
+    activeRunnerId = '';
   }
 
   async function checkFolderState() {
@@ -918,8 +950,10 @@
 
   function scrollToConsoleBottom() {
     setTimeout(() => {
-      const container = document.getElementById('console-output-view');
-      if (container) container.scrollTop = container.scrollHeight;
+      const cContainer = document.getElementById('console-output-view');
+      if (cContainer) cContainer.scrollTop = cContainer.scrollHeight;
+      const tContainer = document.getElementById('terminal-output-view');
+      if (tContainer) tContainer.scrollTop = tContainer.scrollHeight;
     }, 40);
   }
 
@@ -928,7 +962,6 @@
     if (isMeta && event.key === 's') {
       event.preventDefault();
       if (activeTab === 'workspace') saveWorkspaceFile();
-      else if (activeTab === 'notes') handleSaveNote();
       else if (activeTab === 'sandboxes') handleSaveSandbox();
     }
   }
@@ -944,44 +977,58 @@
     return { type: 'p', text: line };
   }
 
-  function copyAIPrompt() {
-    const promptText = `I am using CrabCode, a development workspace with SQLite-backed virtual sandboxes.
-I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS OR EXPERIMENT HERE]
+  let pendingTerminalOutputs = [];
+  let terminalFlushTimer = null;
 
-Please generate:
-1. The necessary code files (specifying relative file paths) to accomplish this. The code should be self-contained and ready to execute.
-2. A Declarative IaC YAML configuration containing setup steps, env_vars, virtual files, build steps, run command, and notes.
+  function flushTerminalOutputs() {
+    terminalFlushTimer = null;
+    if (pendingTerminalOutputs.length === 0) return;
 
-The YAML configuration should follow this structure:
-\`\`\`yaml
-name: "My Sandbox Project"
-version: "1.0"
-environment: "[python / node / go / rust / java / etc.]"
-icon_color: "#HEXCOLOR"
-setup:
-  - name: "Setup step"
-    command: "command to prepare environment"
-    dir: "environments/<name>"
-env_vars:
-  KEY: "value"
-files:
-  - path: "main.py"
-    content: "print('hello')"
-build:
-  - name: "Compile check"
-    command: "compilation command"
-run:
-  command: "exact terminal command to run your main file"
-notes:
-  markdown: "# Documentation"
-  html: "<h3>Interactive Canvas</h3>"
-\`\`\`
+    const items = pendingTerminalOutputs;
+    pendingTerminalOutputs = [];
 
-Format your output clearly, specifying filenames and file contents separately so I can easily save them into my SQLite virtual filesystem.`;
+    let updatedLogs = [...consoleLogs];
+    let wsTerminals = [...workspaceTerminals];
+    let sbTerminals = [...sandboxTerminals];
 
-    navigator.clipboard.writeText(promptText)
-      .then(() => addToast('AI Prompt copied to clipboard', 'success'))
-      .catch((err) => addToast('Failed to copy: ' + String(err), 'error'));
+    for (const data of items) {
+      if (data.id.startsWith('runner_')) {
+        updatedLogs.push({ time: Date.now(), text: data.line, type: 'out' });
+      } else if (data.id.startsWith('shell_')) {
+        let wsIdx = wsTerminals.findIndex(t => t.id === data.id);
+        if (wsIdx !== -1) {
+          wsTerminals[wsIdx] = {
+            ...wsTerminals[wsIdx],
+            logs: [...wsTerminals[wsIdx].logs, data.line]
+          };
+        }
+        let sbIdx = sbTerminals.findIndex(t => t.id === data.id);
+        if (sbIdx !== -1) {
+          sbTerminals[sbIdx] = {
+            ...sbTerminals[sbIdx],
+            logs: [...sbTerminals[sbIdx].logs, data.line]
+          };
+        }
+      }
+    }
+
+    if (updatedLogs.length > 1000) updatedLogs = updatedLogs.slice(-1000);
+
+    wsTerminals.forEach(t => { if (t.logs.length > 1000) t.logs = t.logs.slice(-1000); });
+    sbTerminals.forEach(t => { if (t.logs.length > 1000) t.logs = t.logs.slice(-1000); });
+
+    consoleLogs = updatedLogs;
+    workspaceTerminals = wsTerminals;
+    sandboxTerminals = sbTerminals;
+
+    scrollToConsoleBottom();
+  }
+
+  function queueTerminalOutput(data) {
+    pendingTerminalOutputs.push(data);
+    if (!terminalFlushTimer) {
+      terminalFlushTimer = requestAnimationFrame(flushTerminalOutputs);
+    }
   }
 
   onMount(() => {
@@ -989,17 +1036,25 @@ Format your output clearly, specifying filenames and file contents separately so
     window.addEventListener('keydown', handleKeyDown);
 
     EventsOn('terminal_output', (data) => {
-      if (data.id === processTracker.id) {
-        consoleLogs = [...consoleLogs, data.line];
-        scrollToConsoleBottom();
-      }
+      queueTerminalOutput(data);
     });
 
     EventsOn('terminal_status', (data) => {
-      if (data.id === processTracker.id) {
-        isRunning = false;
-        consoleLogs = [...consoleLogs, `[Process exited: ${data.status}]`];
+      if (data.id.startsWith('runner_')) {
+        if (data.status === '0') {
+          consoleStatus = 'Finished';
+        } else {
+          consoleStatus = 'Error';
+          consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Process exited: ${data.status}]`, type: 'error' }];
+        }
+        isConsoleRunning = false;
+        activeRunnerId = '';
         scrollToConsoleBottom();
+      } else if (data.id.startsWith('shell_')) {
+        let wsIdx = workspaceTerminals.findIndex(t => t.id === data.id);
+        if (wsIdx !== -1) workspaceTerminals[wsIdx].isRunning = false;
+        let sbIdx = sandboxTerminals.findIndex(t => t.id === data.id);
+        if (sbIdx !== -1) sandboxTerminals[sbIdx].isRunning = false;
       }
     });
 
@@ -1010,7 +1065,6 @@ Format your output clearly, specifying filenames and file contents separately so
 
   onDestroy(() => {
     if (workspaceView) workspaceView.destroy();
-    if (notesView) notesView.destroy();
     if (sandboxView) sandboxView.destroy();
   });
 </script>
@@ -1018,8 +1072,8 @@ Format your output clearly, specifying filenames and file contents separately so
 <svelte:window onkeydown={(e) => {
   if (e.key === 'Escape') {
     if (modal.show) modal.onCancel();
-    if (showGuideModal) showGuideModal = false;
     if (showCreateSandboxModal) showCreateSandboxModal = false;
+    if (showInitEnvModal) showInitEnvModal = false;
   }
 }} />
 
@@ -1033,13 +1087,7 @@ Format your output clearly, specifying filenames and file contents separately so
 
 {#if modal.show}
   <div class="modal-backdrop" onclick={modal.onCancel} role="presentation">
-    <div
-      class="modal-box"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.key === 'Escape' && modal.onCancel()}
-      role="dialog"
-      tabindex="-1"
-    >
+    <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <div class="modal-header">{modal.title}</div>
       <div class="modal-body">
         <input
@@ -1061,68 +1109,26 @@ Format your output clearly, specifying filenames and file contents separately so
   </div>
 {/if}
 
-{#if showGuideModal}
-  <div class="modal-backdrop" onclick={() => showGuideModal = false} role="presentation">
-    <div
-      class="modal-box guide-modal"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.key === 'Escape' && (showGuideModal = false)}
-      role="dialog"
-      tabindex="-1"
-    >
-      <div class="modal-header">Sandbox Environment Guide</div>
+{#if showInitEnvModal}
+  <div class="modal-backdrop" onclick={() => showInitEnvModal = false} role="presentation">
+    <div class="modal-box guide-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">Initialize Shared Environment</div>
       <div class="modal-body guide-body">
-        <p>CrabCode sandboxes are virtual, isolated mini-projects stored inside your system base location (<code>~/.crabcode/crabcode.db</code>). Your workspace folder stays 100% clean — no <code>.crab/</code> directory is created there.</p>
-        <h4>IaC Execution Lifecycle</h4>
-        <ol>
-          <li><strong>Setup</strong>: declarative <code>setup</code> steps run inside <code>~/.crabcode/environments/</code></li>
-          <li><strong>Extract</strong>: virtual files are extracted to <code>~/.crabcode/temp_sandboxes/&lt;id&gt;/</code></li>
-          <li><strong>Build</strong>: <code>build</code> steps run in the temp directory</li>
-          <li><strong>Run</strong>: <code>run.command</code> executes with configured <code>env_vars</code></li>
-        </ol>
-        <h4>Declarative YAML Configuration</h4>
-         <pre class="guide-code"><code>name: "Weather Tracker Experiment"
-environment: "python"
-setup: []
-env_vars:
-  KEY: "value"
-files:
-  - path: "main.py"
-    content: "print('hello')"
-build: []
-run:
-  command: "python3 main.py"
-notes:
-  markdown: "# Experiment doc"
-  html: "&lt;h3&gt;Live View&lt;/h3&gt;"</code></pre>
-        <h4>Outsource Setup to AI</h4>
-        <p>Use this prompt template with an AI assistant to generate sandbox files and config:</p>
-        <div class="prompt-box">
-          <div class="prompt-header">
-            <span>AI Prompt Template</span>
-            <button class="copy-prompt-btn" onclick={copyAIPrompt}>Copy</button>
-          </div>
-          <pre class="prompt-preview"><code>I am using CrabCode, a development workspace with SQLite-backed virtual sandboxes.
-I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
-...</code></pre>
-        </div>
+        <p>This sandbox relies on a shared project environment that has not been initialized yet.</p>
       </div>
       <div class="modal-footer">
-        <button class="modal-btn secondary" onclick={() => showGuideModal = false}>Close</button>
+        <button class="modal-btn secondary" onclick={() => showInitEnvModal = false} disabled={isInitializingEnv}>Cancel</button>
+        <button class="modal-btn primary" onclick={triggerInitializeEnvironment} disabled={isInitializingEnv}>
+          {isInitializingEnv ? 'Initializing...' : 'Initialize Environment'}
+        </button>
       </div>
     </div>
   </div>
 {/if}
 
 {#if showCreateSandboxModal}
-  <div class="modal-backdrop" onclick={cancelCreateSandbox} role="presentation">
-    <div
-      class="modal-box sandbox-modal"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.key === 'Escape' && cancelCreateSandbox()}
-      role="dialog"
-      tabindex="-1"
-    >
+  <div class="modal-backdrop" onclick={() => showCreateSandboxModal = false} role="presentation">
+    <div class="modal-box sandbox-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <div class="modal-header">Create Virtual Sandbox</div>
       <div class="modal-body">
         <label class="sandbox-modal-label" for="sandboxName">Sandbox Name</label>
@@ -1132,12 +1138,9 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
           class="modal-input sandbox-name-input"
           placeholder="My Experiment"
           bind:value={newSandboxName}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') confirmCreateSandbox();
-            if (e.key === 'Escape') cancelCreateSandbox();
-          }}
+          onkeydown={(e) => { if (e.key === 'Enter') confirmCreateSandbox(); }}
         />
-        <label class="sandbox-modal-label" for="sandboxTemplate">Template (Loaded dynamically from templates/)</label>
+        <label class="sandbox-modal-label" for="sandboxTemplate">Template</label>
         <div class="templates-grid">
           {#each availableTemplates as tmpl}
             <button
@@ -1152,7 +1155,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
         </div>
       </div>
       <div class="modal-footer">
-        <button class="modal-btn secondary" onclick={cancelCreateSandbox}>Cancel</button>
+        <button class="modal-btn secondary" onclick={() => showCreateSandboxModal = false}>Cancel</button>
         <button class="modal-btn primary" onclick={confirmCreateSandbox}>Create Sandbox</button>
       </div>
     </div>
@@ -1163,62 +1166,23 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   <header class="top-header">
     <div class="top-header-left">
       {#if activeTab !== 'settings'}
-        <button
-          class="sidebar-toggle-btn"
-          class:active={showSidebar}
-          onclick={() => showSidebar = !showSidebar}
-          title={showSidebar ? 'Hide Sidebar' : 'Show Sidebar'}
-        >
+        <button class="sidebar-toggle-btn" class:active={showSidebar} onclick={() => showSidebar = !showSidebar}>
           <PanelLeft size={16} />
         </button>
       {/if}
-      <span class="app-brand">
-        <Code2 size={18} class="brand-icon" />
-        CrabCode
-      </span>
+      <span class="app-brand">CrabCode</span>
       <button class="open-btn compact" onclick={chooseFolder}>
         <FolderOpen size={14} />
         <span>Select Workspace</span>
       </button>
       {#if currentFolder}
-        <span class="workspace-badge" title={currentFolder}>
-          {currentFolder.split(/[\\/]/).pop()}
-        </span>
+        <span class="workspace-badge" title={currentFolder}>{currentFolder.split(/[\\/]/).pop()}</span>
       {/if}
     </div>
     <nav class="top-tabs">
-      <button
-        class="top-tab"
-        class:active={activeTab === 'workspace'}
-        onclick={() => activeTab = 'workspace'}
-      >
-        <FolderOpen size={14} />
-        <span>Workspace</span>
-      </button>
-      <button
-        class="top-tab"
-        class:active={activeTab === 'notes'}
-        onclick={() => activeTab = 'notes'}
-      >
-        <BookOpen size={14} />
-        <span>Notes</span>
-      </button>
-      <button
-        class="top-tab"
-        class:active={activeTab === 'sandboxes'}
-        onclick={() => activeTab = 'sandboxes'}
-      >
-        <Database size={14} />
-        <span>Sandboxes</span>
-      </button>
-      <button
-        class="top-tab"
-        class:active={activeTab === 'settings'}
-        onclick={() => activeTab = 'settings'}
-      >
-        <Settings size={14} />
-        <span>Settings</span>
-      </button>
+      <button class="top-tab" class:active={activeTab === 'workspace'} onclick={() => activeTab = 'workspace'}><FolderOpen size={14} /> Workspace</button>
+      <button class="top-tab" class:active={activeTab === 'sandboxes'} onclick={() => activeTab = 'sandboxes'}><Database size={14} /> Sandboxes</button>
+      <button class="top-tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}><Settings size={14} /> Settings</button>
     </nav>
   </header>
 
@@ -1229,122 +1193,85 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
           {#if activeTab === 'workspace'}
             {#if currentFolder}
               <div class="section-context-header">
-                <span class="project-title" title={currentFolder}>
-                  {currentFolder.split(/[\\/]/).pop()}
-                </span>
+                <span class="project-title">{currentFolder.split(/[\\/]/).pop()}</span>
                 <div class="sidebar-toolbar">
-                  <button class="toolbar-btn" onclick={createFile} title="New File">
-                    <FilePlus size={13} />
-                  </button>
-                  <button class="toolbar-btn" onclick={createFolder} title="New Folder">
-                    <FolderPlus size={13} />
-                  </button>
-                  <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sidebar">
-                    <ChevronLeft size={13} />
-                  </button>
+                  <button class="toolbar-btn" onclick={createFile} title="New File"><FilePlus size={13} /></button>
+                  <button class="toolbar-btn" onclick={createFolder} title="New Folder"><FolderPlus size={13} /></button>
+                  <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sidebar"><ChevronLeft size={13} /></button>
                 </div>
               </div>
               <div class="tree-scroll">
                 {#each fileTree as node}
-                  <FileNode
-                    {node}
-                    {openFile}
-                    {toggleFolder}
-                    {expandedFolders}
-                    {folderContents}
-                    {activeFilePath}
-                    {activeFileUnsaved}
-                  />
+                  <FileNode {node} {openFile} {toggleFolder} {expandedFolders} {folderContents} {activeFilePath} {activeFileUnsaved} />
                 {/each}
               </div>
             {:else}
-              <div class="empty-tree-state">
-                <p>No workspace loaded.</p>
-                <p class="subtitle">Use Select Workspace to open a folder.</p>
-              </div>
+              <div class="empty-tree-state"><p>No workspace loaded.</p></div>
             {/if}
-          {:else if activeTab === 'notes'}
-            <div class="section-context-header">
-              <span class="project-title">SQLite Notes</span>
-              <div class="sidebar-toolbar">
-                <button class="toolbar-btn primary" onclick={handleCreateNote} title="New Note">
-                  <Plus size={13} />
-                </button>
-                <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sidebar">
-                  <ChevronLeft size={13} />
-                </button>
-              </div>
-            </div>
-            <div class="notes-explorer">
-              <input
-                type="text"
-                class="sidebar-search-input"
-                placeholder="Search notes..."
-                bind:value={noteSearchQuery}
-              />
-              <div class="notes-list-scroll">
-                {#each filteredNotes as note (note.id)}
-                  <div
-                    class="sqlite-item-row"
-                    class:active={activeNoteId === note.id}
-                    onclick={() => selectNote(note)}
-                    role="button"
-                    tabindex="0"
-                    onkeydown={(e) => e.key === 'Enter' && selectNote(note)}
-                  >
-                    <span class="item-title">{note.title}</span>
-                    <button
-                      class="item-delete-btn"
-                      onclick={(e) => { e.stopPropagation(); handleDeleteNote(note.id); }}
-                      title="Delete note"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                {/each}
-                {#if filteredNotes.length === 0}
-                  <div class="sidebar-empty-hint">No notes yet.</div>
-                {/if}
-              </div>
-            </div>
           {:else if activeTab === 'sandboxes'}
             <div class="section-context-header">
-              <span class="project-title">Virtual Sandboxes</span>
+              <span class="project-title">Sandboxes</span>
               <div class="sidebar-toolbar">
-                <button class="toolbar-btn primary" onclick={handleCreateSandbox} title="New Sandbox">
-                  <Plus size={13} />
-                </button>
-                <button class="toolbar-btn" onclick={() => showSidebar = false} title="Hide Sandbox Panel">
-                  <ChevronLeft size={13} />
-                </button>
+                <button class="toolbar-btn" onclick={createVirtualFolder} title="New Virtual Folder"><AddFolderIcon size={13} /></button>
+                <button class="toolbar-btn primary" onclick={() => openCreateSandboxModal('')} title="New Sandbox"><Plus size={13} /></button>
               </div>
             </div>
-            <div class="sandboxes-list-scroll">
-              {#each sandboxesList as sandbox (sandbox.id)}
-                <div
-                  class="sqlite-item-row"
-                  class:active={activeSandboxId === sandbox.id}
-                  onclick={() => selectSandbox(sandbox)}
-                  role="button"
-                  tabindex="0"
-                  onkeydown={(e) => e.key === 'Enter' && selectSandbox(sandbox)}
-                >
-                  <div class="item-title-wrap">
-                    <Layers size={13} class="item-icon" />
-                    <span class="item-title">{sandbox.name}</span>
+
+            <div class="sandbox-fs-explorer">
+              <input type="text" class="sidebar-search-input" placeholder="Search sandboxes..." bind:value={sandboxSearchQuery} />
+              <div class="sandboxes-list-scroll">
+
+                {#each virtualFolders as folderName}
+                  {@const itemsInFolder = (folderGroupedSandboxes[folderName] || [])}
+                  <div class="virtual-folder-group">
+                    <div
+                      class="virtual-folder-header"
+                      onclick={() => expandedVirtualFolders[folderName] = !expandedVirtualFolders[folderName]}
+                      role="button"
+                      tabindex="0"
+                    >
+                      <span class="folder-arrow">{expandedVirtualFolders[folderName] ? '▼' : '▶'}</span>
+                      <Folder size={13} class="v-folder-icon" />
+                      <span class="v-folder-name">{folderName}</span>
+                      <span class="v-folder-count">({itemsInFolder.length})</span>
+                      <button class="add-sub-sandbox-btn" onclick={(e) => { e.stopPropagation(); openCreateSandboxModal(folderName); }} title="Add sandbox to this folder">
+                        <Plus size={11} />
+                      </button>
+                    </div>
+
+                    {#if expandedVirtualFolders[folderName]}
+                      <div class="folder-children-list">
+                        {#each itemsInFolder as sandbox (sandbox.id)}
+                          <div class="sqlite-item-row nested" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
+                            <div class="item-title-wrap">
+                              <Layers size={12} class="item-icon" />
+                              <span class="item-title">{sandbox.name}</span>
+                            </div>
+                            <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); moveSandboxToFolder(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
+                            <button class="item-delete-btn" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}><Trash2 size={11} /></button>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
-                  <button
-                    class="item-delete-btn"
-                    onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}
-                    title="Delete sandbox"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              {/each}
-              {#if sandboxesList.length === 0}
-                <div class="sidebar-empty-hint">No sandboxes yet.</div>
-              {/if}
+                {/each}
+
+                {#each (folderGroupedSandboxes[''] || []) as sandbox (sandbox.id)}
+                  <div class="sqlite-item-row" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
+                    <div class="item-title-wrap">
+                      <Layers size={13} class="item-icon" />
+                      <span class="item-title">{sandbox.name}</span>
+                    </div>
+                    <button class="item-move-btn" onclick={(e) => { e.stopPropagation(); moveSandboxToFolder(sandbox.id); }} title="Move to folder"><FolderInput size={11} /></button>
+                    <button class="item-delete-btn" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }}><Trash2 size={12} /></button>
+                  </div>
+                {/each}
+
+                {#if filteredSandboxes.length === 0}
+                  <div class="sidebar-empty-hint">No sandboxes match search.</div>
+                {/if}
+
+              </div>
             </div>
           {/if}
         </div>
@@ -1355,256 +1282,57 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
       {#if activeTab === 'workspace'}
         {#if activeFilePath}
           <div class="editor-header">
-            <div class="file-info">
-              <span class="active-file-name">{activeFileName}</span>
-              <span class="active-file-path" title={activeFilePath}>{activeFilePath}</span>
-            </div>
+            <div class="file-info"><span class="active-file-name">{activeFileName}</span></div>
             <div class="header-actions">
               {#if !isRunning}
                 <button class="header-action-btn run" onclick={runActiveCode} title="Run Code">
-                  <Play size={14} fill="#48bb78" stroke="none" />
-                  <span>Run</span>
+                  <Play size={14} fill="#48bb78" stroke="none" /> <span>Run</span>
                 </button>
               {:else}
                 <button class="header-action-btn stop" onclick={stopActiveProcess} title="Stop">
-                  <Square size={14} fill="#ff5a36" stroke="none" />
-                  <span>Stop</span>
+                  <Square size={14} fill="#ff5a36" stroke="none" /> <span>Stop</span>
                 </button>
               {/if}
-              <button
-                class="header-action-btn"
-                onclick={saveWorkspaceFile}
-                disabled={!activeFileUnsaved}
-                title="Save (Ctrl+S)"
-              >
-                <Check size={14} />
-                <span>Save</span>
+              <button class="header-action-btn" onclick={saveWorkspaceFile} disabled={!activeFileUnsaved}>
+                <Check size={14} /> <span>Save</span>
               </button>
-              <div class="divider">|</div>
-              <button
-                class="header-action-btn"
-                class:active={isSplitPane}
-                onclick={() => isSplitPane = !isSplitPane}
-                title="Toggle Split Pane"
-              >
-                <Columns size={14} />
-                <span>Split</span>
-              </button>
-              {#if isSplitPane}
-                <select class="split-select" bind:value={splitPaneType}>
-                  <option value="notes">Notes</option>
-                  <option value="sandbox">Sandbox</option>
-                </select>
-              {/if}
             </div>
           </div>
-
           <div class="workspace-split">
-            <div class="editor-body">
-              <div class="editor-container-inner" bind:this={workspaceEditorContainer}></div>
-            </div>
-
-            {#if isSplitPane}
-              <div class="split-view-container">
-                {#if splitPaneType === 'notes'}
-                  <div class="split-header-bar">
-                    <span>
-                      <FileText size={12} />
-                      {activeNoteTitle || 'No note selected'}
-                    </span>
-                    <div class="split-controls">
-                      <button class="split-btn" onclick={() => isMarkdownEditing = !isMarkdownEditing}>
-                        {#if isMarkdownEditing}
-                          <Eye size={11} /> Preview
-                        {:else}
-                          <Edit3 size={11} /> Edit
-                        {/if}
-                      </button>
-                      <button class="split-btn save" onclick={handleSaveNote} disabled={!activeNoteUnsaved}>
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                  <div class="split-body-content">
-                    {#if activeNoteId}
-                      {#if isMarkdownEditing}
-                        <div class="notes-cm-container" bind:this={notesEditorContainer}></div>
-                      {:else}
-                        <div class="markdown-rendered-view">
-                          {#each activeNoteContent.split('\n') as line}
-                            {@const part = renderMarkdownLine(line)}
-                            {#if part.type === 'h1'}
-                              <h1>{part.text}</h1>
-                            {:else if part.type === 'h2'}
-                              <h2>{part.text}</h2>
-                            {:else if part.type === 'h3'}
-                              <h3>{part.text}</h3>
-                            {:else if part.type === 'quote'}
-                              <blockquote>{part.text}</blockquote>
-                            {:else if part.type === 'li'}
-                              <li>{part.text}</li>
-                            {:else if part.type === 'codeblock'}
-                              <pre class="inline-codeblock"><code>{part.text}</code></pre>
-                            {:else if part.type === 'br'}
-                              <br />
-                            {:else}
-                              <p>{part.text}</p>
-                            {/if}
-                          {/each}
-                        </div>
-                      {/if}
-                    {:else}
-                      <div class="split-empty">Select a note from the Notes tab sidebar.</div>
-                    {/if}
-                  </div>
-                {:else}
-                  <div class="split-header-bar">
-                    <span>{activeSandboxFileName || 'No sandbox file'}</span>
-                    <button
-                      class="split-btn save"
-                      onclick={handleSaveSandbox}
-                      disabled={!activeSandboxFileUnsaved}
-                    >
-                      Save
-                    </button>
-                  </div>
-                  <div class="split-body-content">
-                    {#if activeSandboxId && activeSandboxFilePath}
-                      <div class="sandbox-cm-container" bind:this={sandboxEditorContainer}></div>
-                    {:else}
-                      <div class="split-empty">Select a sandbox and file from the Sandboxes tab.</div>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-            {/if}
+            <div class="editor-body"><div class="editor-container-inner" bind:this={workspaceEditorContainer}></div></div>
           </div>
 
           {#if isConsoleOpen}
-            <div class="console-drawer">
-              <div class="console-header">
-                <div class="console-title">
-                  <Terminal size={12} />
-                  <span>CONSOLE OUTPUT</span>
-                </div>
-                <div class="console-actions">
-                  <button class="console-btn" onclick={() => consoleLogs = []}>Clear</button>
-                  <button class="console-btn toggle" onclick={() => isConsoleOpen = false}>Minimize</button>
-                </div>
-              </div>
-              <div class="console-body" id="console-output-view">
-                {#each consoleLogs as log}
-                  <div class="console-line">{log}</div>
-                {/each}
-              </div>
-            </div>
+            <TerminalDrawer
+              bind:bottomMode
+              bind:consoleLogs
+              bind:consoleStatus
+              bind:isConsoleRunning
+              bind:terminals={workspaceTerminals}
+              bind:activeTermId={activeWorkspaceTermId}
+              onSendTerminalInput={sendTerminalInput}
+              onCloseTerminal={closeWorkspaceTerminal}
+              onAddTerminal={async () => {
+                const id = createWorkspaceTerminal('bash');
+                try { await StartTerminalSession(id, currentFolder); } catch (_) {}
+              }}
+              onClearConsole={() => { consoleLogs = []; consoleStatus = 'Ready'; }}
+              onMinimize={() => isConsoleOpen = false}
+            />
           {:else}
             <button class="console-restore-bar" onclick={() => isConsoleOpen = true}>
-              <Terminal size={12} />
-              <span>Show Console</span>
+              <Terminal size={12} /> <span>Show Console & Terminal</span>
             </button>
           {/if}
         {:else}
-          <div class="editor-empty-state">
-            <div class="welcome-box">
-              <h1>Workspace</h1>
-              <p>Open a project folder to edit code, run scripts, and optionally split-pane with notes or sandboxes.</p>
-              <button class="action-btn primary" onclick={chooseFolder}>
-                <FolderOpen size={14} />
-                <span>Select Workspace</span>
-              </button>
-            </div>
-          </div>
-        {/if}
-
-      {:else if activeTab === 'notes'}
-        {#if activeNoteId}
-          <div class="markdown-tab-panel">
-            <div class="note-editing-header">
-              <input type="text" class="note-title-input" bind:value={activeNoteTitle} placeholder="Note title" />
-              <div class="note-header-actions">
-                <button class="action-btn" onclick={() => isMarkdownEditing = !isMarkdownEditing}>
-                  {#if isMarkdownEditing}
-                    <Eye size={13} />
-                    <span>Preview</span>
-                  {:else}
-                    <Edit3 size={13} />
-                    <span>Edit</span>
-                  {/if}
-                </button>
-                <button class="action-btn primary" onclick={handleSaveNote} disabled={!activeNoteUnsaved}>
-                  Save Note
-                </button>
-              </div>
-            </div>
-            <div class="note-editing-body">
-              {#if isMarkdownEditing}
-                <div class="notes-cm-container full" bind:this={notesEditorContainer}></div>
-              {:else}
-                <div class="markdown-rendered-view full">
-                  {#each activeNoteContent.split('\n') as line}
-                    {@const part = renderMarkdownLine(line)}
-                    {#if part.type === 'h1'}
-                      <h1>{part.text}</h1>
-                    {:else if part.type === 'h2'}
-                      <h2>{part.text}</h2>
-                    {:else if part.type === 'h3'}
-                      <h3>{part.text}</h3>
-                    {:else if part.type === 'quote'}
-                      <blockquote>{part.text}</blockquote>
-                    {:else if part.type === 'li'}
-                      <li>{part.text}</li>
-                    {:else if part.type === 'codeblock'}
-                      <pre class="inline-codeblock"><code>{part.text}</code></pre>
-                    {:else if part.type === 'br'}
-                      <br />
-                    {:else}
-                      <p>{part.text}</p>
-                    {/if}
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          </div>
-        {:else}
-          <div class="editor-empty-state">
-            <div class="welcome-box">
-              <h1>Notes</h1>
-              <p>SQLite-backed markdown notebooks stored in your workspace `.crab/crab.db` file.</p>
-              {#if currentFolder}
-                <button class="action-btn primary" onclick={handleCreateNote}>
-                  <Plus size={14} />
-                  <span>Create Note</span>
-                </button>
-              {:else}
-                <button class="action-btn" onclick={chooseFolder}>
-                  <FolderOpen size={14} />
-                  <span>Select Workspace First</span>
-                </button>
-              {/if}
-            </div>
-          </div>
+          <div class="editor-empty-state"><div class="welcome-box"><h1>Workspace</h1></div></div>
         {/if}
 
       {:else if activeTab === 'sandboxes'}
         {#if activeSandboxId}
           <div class="sandbox-tab-panel">
             <div class="sandbox-header-controls">
-              <div class="sandbox-title-container">
-                <input
-                  type="text"
-                  class="sandbox-title-input"
-                  value={activeSandboxName}
-                  placeholder="Sandbox Title"
-                  oninput={(e) => handleAutoRenameSandbox(e.target.value)}
-                  onblur={(e) => handleAutoRenameSandbox(e.target.value, true)}
-                />
-                <span class="sandbox-id-badge">
-                  <Database size={10} />
-                  SQLITE VIRTUAL PROJECT
-                </span>
-              </div>
-
+              <input type="text" class="sandbox-title-input" value={activeSandboxName} oninput={(e) => handleAutoRenameSandbox(e.target.value)} />
               <div class="sandbox-actions">
                 <button
                   class="action-btn"
@@ -1621,32 +1349,15 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                   onclick={() => showSandboxSplit = !showSandboxSplit}
                   title="Toggle Notes/Inspector Split"
                 >
-                  <FileText size={13} />
-                  <span>Notes</span>
-                </button>
-                <button
-                  class="action-btn guide-btn"
-                  onclick={() => showGuideModal = true}
-                  title="Sandbox Guide & IaC Rules"
-                >
-                  <HelpCircle size={13} />
-                  <span>Guide</span>
+                  <BookOpen size={13} />
+                  <span>Notes & Config</span>
                 </button>
                 {#if !isRunning}
-                  <button class="action-btn run" onclick={runActiveCode} title="Run Sandbox">
-                    <Play size={13} fill="#48bb78" stroke="none" />
-                    <span>Run</span>
-                  </button>
+                  <button class="action-btn run" onclick={runActiveCode}><Play size={13} fill="#48bb78" stroke="none" /> Run</button>
                 {:else}
-                  <button class="action-btn stop" onclick={stopActiveProcess} title="Stop Sandbox">
-                    <Square size={13} fill="#ff5a36" stroke="none" />
-                    <span>Stop</span>
-                  </button>
+                  <button class="action-btn stop" onclick={stopActiveProcess}><Square size={13} fill="#ff5a36" stroke="none" /> Stop</button>
                 {/if}
-                <button class="action-btn primary" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved} title="Save Sandbox Changes">
-                  <Save size={13} />
-                  <span>Save</span>
-                </button>
+                <button class="action-btn primary" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved}><Save size={13} /> Save</button>
               </div>
             </div>
 
@@ -1655,29 +1366,17 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                 {#if showSandboxExplorer}
                   <div class="sandbox-virtual-explorer">
                     <div class="v-explorer-header">
-                      <span class="v-explorer-title">
-                        <FileCode size={12} />
-                        Virtual Files
-                      </span>
-                      <button class="v-explorer-btn" onclick={handleCreateSandboxFile} title="Add file">
-                        <Plus size={13} />
-                      </button>
+                      <span>Virtual Files</span>
+                      <button class="v-explorer-btn" onclick={handleCreateSandboxFile}><Plus size={13} /></button>
                     </div>
                     <div class="virtual-files-list">
                       {#each sandboxFilesList as vFile (vFile.path)}
                         <div class="v-file-row-wrap" class:active={activeSandboxFilePath === vFile.path}>
-                          <button
-                            class="v-file-row"
-                            onclick={() => selectSandboxFile(vFile)}
-                          >
+                          <button class="v-file-row" onclick={() => selectSandboxFile(vFile)}>
                             <FileCode size={13} class="v-file-icon" />
                             <span class="v-file-name">{vFile.path}</span>
                           </button>
-                          <button
-                            class="v-file-delete"
-                            onclick={() => handleDeleteSandboxFile(vFile.path)}
-                            title="Delete file"
-                          >
+                          <button class="v-file-delete" onclick={() => handleDeleteSandboxFile(vFile.path)}>
                             <Trash2 size={11} />
                           </button>
                         </div>
@@ -1688,20 +1387,12 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
 
                 <div class="sandbox-editor-wrapper">
                   {#if activeSandboxFilePath}
-                    <div class="v-file-info">
-                      <span class="v-file-active-name">{activeSandboxFileName}</span>
-                      <span class="v-file-active-path">{activeSandboxFilePath}</span>
-                      {#if activeSandboxFileUnsaved}
-                        <span class="unsaved-pill">Unsaved</span>
-                      {/if}
-                    </div>
                     <div class="sandbox-cm-container full" bind:this={sandboxEditorContainer}></div>
-                  {:else}
-                    <div class="split-empty">No virtual file selected.</div>
                   {/if}
                 </div>
               </div>
 
+              <!-- RESTORED SANDBOX NOTES, HTML CANVAS & YAML CONFIG SPLIT PANEL -->
               {#if showSandboxSplit}
                 <div class="sandbox-notes-pane">
                   <div class="sandbox-notes-header">
@@ -1737,7 +1428,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                     {#if sandboxSplitType === 'markdown'}
                       <div class="split-pane-wrapper">
                         <div class="pane-action-row">
-                          <span class="pane-title">MD Documentation</span>
+                          <span class="pane-title">MD Documentation Note</span>
                           <button
                             class="split-btn"
                             onclick={() => isSandboxMarkdownEditing = !isSandboxMarkdownEditing}
@@ -1753,7 +1444,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                           <textarea
                             class="notes-raw-textarea"
                             bind:value={activeSandboxMarkdownNote}
-                            placeholder="State the purpose, requirements, and principles of your dynamic experiment..."
+                            placeholder="Document the design goals, math proofs, or logic of this experiment..."
                           ></textarea>
                         {:else}
                           <div class="markdown-rendered-view text-view-box">
@@ -1778,7 +1469,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                               {/if}
                             {/each}
                             {#if !activeSandboxMarkdownNote}
-                              <p class="empty-notif">No documentation note supplied yet.</p>
+                              <p class="empty-notif">No documentation note added yet.</p>
                             {/if}
                           </div>
                         {/if}
@@ -1787,7 +1478,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                     {:else if sandboxSplitType === 'html'}
                       <div class="split-pane-wrapper">
                         <div class="pane-action-row">
-                          <span class="pane-title">Dynamic Interactive Visuals</span>
+                          <span class="pane-title">Interactive Visual Canvas</span>
                           <button
                             class="split-btn"
                             onclick={() => isSandboxHTMLEditing = !isSandboxHTMLEditing}
@@ -1803,7 +1494,7 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                           <textarea
                             class="notes-raw-textarea code-family"
                             bind:value={activeSandboxHTMLNote}
-                            placeholder="Insert custom HTML code, CSS stylesheet setups, or Javascript drawing loops..."
+                            placeholder="Insert custom HTML widgets, SVG graphics, or JavaScript drawing loops..."
                           ></textarea>
                         {:else}
                           <div class="html-preview-frame-container">
@@ -1820,10 +1511,9 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
                     {:else if sandboxSplitType === 'yaml'}
                       <div class="yaml-config-panel">
                         <div class="yaml-config-header">
-                          <h3>Environment Config (YAML)</h3>
+                          <h3>Environment Rules (YAML)</h3>
                           <p>
-                            Define sandbox execution rules. Set <code>run_command</code> to control how
-                            files are compiled and executed from the temp extraction directory.
+                            Configure execution rules. Set <code>run.command</code> to dictate build and run steps.
                           </p>
                         </div>
                         <textarea
@@ -1842,49 +1532,30 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
             </div>
 
             {#if isConsoleOpen}
-              <div class="console-drawer">
-                <div class="console-header">
-                  <div class="console-title">
-                    <Terminal size={12} />
-                    <span>SANDBOX CONSOLE</span>
-                  </div>
-                  <div class="console-actions">
-                    <button class="console-btn" onclick={() => consoleLogs = []}>Clear</button>
-                    <button class="console-btn toggle" onclick={() => isConsoleOpen = false}>Minimize</button>
-                  </div>
-                </div>
-                <div class="console-body" id="console-output-view">
-                  {#each consoleLogs as log}
-                    <div class="console-line">{log}</div>
-                  {/each}
-                </div>
-              </div>
+              <TerminalDrawer
+                bind:bottomMode
+                bind:consoleLogs
+                bind:consoleStatus
+                bind:isConsoleRunning
+                bind:terminals={sandboxTerminals}
+                bind:activeTermId={activeSandboxTermId}
+                onSendTerminalInput={sendTerminalInput}
+                onCloseTerminal={closeSandboxTerminal}
+                onAddTerminal={async () => {
+                  const id = createSandboxTerminal('bash');
+                  try {
+                    const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+                    await StartTerminalSession(id, sandboxDir);
+                  } catch (_) {}
+                }}
+                onClearConsole={() => { consoleLogs = []; consoleStatus = 'Ready'; }}
+                onMinimize={() => isConsoleOpen = false}
+              />
             {:else}
               <button class="console-restore-bar" onclick={() => isConsoleOpen = true}>
-                <Terminal size={12} />
-                <span>Show Console</span>
+                <Terminal size={12} /> <span>Show Console & Terminal</span>
               </button>
             {/if}
-          </div>
-        {:else}
-          <div class="editor-empty-state">
-            <div class="welcome-box">
-              <h1>Sandboxes</h1>
-              <p>Virtual mini-projects stored in SQLite. Extract to temp, run with YAML-defined commands.</p>
-              {#if currentFolder}
-                <div style="display: flex; gap: 8px; justify-content: center;">
-                  <button class="action-btn primary" onclick={handleCreateSandbox}>
-                    <Plus size={14} />
-                    <span>Create Sandbox</span>
-                  </button>
-                </div>
-              {:else}
-                <button class="action-btn" onclick={chooseFolder}>
-                  <FolderOpen size={14} />
-                  <span>Select Workspace First</span>
-                </button>
-              {/if}
-            </div>
           </div>
         {/if}
 
@@ -1892,54 +1563,14 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
         <div class="settings-view-panel">
           <div class="settings-card">
             <h2>CrabCode System Base Location</h2>
-            <p class="settings-desc">
-              Specify the root storage location where configuration rules, workspace database overrides,
-              global setups, and playbooks are placed. Perfect for moving your data directory to an
-              external storage unit.
-            </p>
-            <div class="settings-field-group">
-              <label for="crabRootPath">CrabCode Data Folder (.crabcode):</label>
-              <div class="settings-input-row">
-                <input
-                  type="text"
-                  id="crabRootPath"
-                  class="settings-path-input"
-                  bind:value={settingsCrabRootPath}
-                  oninput={checkFolderState}
-                  placeholder="~/.crabcode"
-                />
-                <button class="settings-browse-btn" onclick={browseCrabRootPath}>Browse</button>
-              </div>
+            <div class="settings-input-row">
+              <input type="text" class="settings-path-input" bind:value={settingsCrabRootPath} oninput={checkFolderState} />
+              <button class="settings-browse-btn" onclick={browseCrabRootPath}>Browse</button>
             </div>
-
             {#if isCrabFolderEmpty}
-              <div class="initialization-banner">
-                <div class="banner-content">
-                  <span class="warning-icon">&#9888;&#65039;</span>
-                  <div>
-                    <h4>Uninitialized Directory</h4>
-                    <p>This directory is currently empty or does not exist. Initialize the necessary environment folder structures and templates below.</p>
-                  </div>
-                </div>
-                <button class="initialize-btn" onclick={initializeFolderStructure}>
-                  Initialize Folder Structure
-                </button>
-              </div>
+              <button class="initialize-btn" onclick={initializeFolderStructure}>Initialize Folder Structure</button>
             {/if}
-
-            <div class="settings-divider"></div>
-
-            <h2>Universal Environments</h2>
-            <p class="settings-desc">Environment and package toolchains are stored automatically inside your active CrabCode folder path.</p>
-
-            <div class="derived-path-display">
-              <span class="derived-label">Derived Environments Path:</span>
-              <code class="derived-code">{settingsCrabRootPath ? `${settingsCrabRootPath}/environments` : 'Unconfigured'}</code>
-            </div>
-
-            <div class="settings-save-row">
-              <button class="settings-save-btn" onclick={saveGlobalConfig} disabled={isCrabFolderEmpty}>Save Changes</button>
-            </div>
+            <button class="settings-save-btn" onclick={saveGlobalConfig} disabled={isCrabFolderEmpty}>Save Changes</button>
           </div>
         </div>
       {/if}
@@ -1949,13 +1580,6 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
           <span class="status-indicator" class:running={isRunning}></span>
           <span class="status-text">{statusMessage}</span>
         </div>
-        {#if activeTab === 'workspace' && activeFilePath}
-          <div class="status-right">
-            <span>Lines: {lineCount}</span>
-            <span>Chars: {charCount}</span>
-            <span class="lang-tag">{fileExtension}</span>
-          </div>
-        {/if}
       </footer>
     </main>
   </div>
@@ -2011,9 +1635,22 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     gap: 8px;
   }
 
-  :global(.brand-icon) {
-    color: #ff5a36;
-    flex-shrink: 0;
+  .sidebar-toggle-btn {
+    background: none;
+    border: 1px solid #2d3748;
+    color: #a0aec0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: background-color 0.15s, color 0.15s;
+  }
+
+  .sidebar-toggle-btn:hover,
+  .sidebar-toggle-btn.active {
+    background-color: #2d3748;
+    color: #edf2f7;
   }
 
   .open-btn.compact {
@@ -2168,25 +1805,105 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     overflow-y: auto;
   }
 
-  .tree-scroll::-webkit-scrollbar,
-  .notes-list-scroll::-webkit-scrollbar,
-  .sandboxes-list-scroll::-webkit-scrollbar,
-  .virtual-files-list::-webkit-scrollbar,
-  .console-body::-webkit-scrollbar,
-  .markdown-rendered-view::-webkit-scrollbar,
-  .guide-body::-webkit-scrollbar {
-    width: 5px;
+  .notes-explorer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
-  .tree-scroll::-webkit-scrollbar-thumb,
-  .notes-list-scroll::-webkit-scrollbar-thumb,
-  .sandboxes-list-scroll::-webkit-scrollbar-thumb,
-  .virtual-files-list::-webkit-scrollbar-thumb,
-  .console-body::-webkit-scrollbar-thumb,
-  .markdown-rendered-view::-webkit-scrollbar-thumb,
-  .guide-body::-webkit-scrollbar-thumb {
-    background-color: #2d3748;
+  .sidebar-search-input {
+    background-color: #12121a;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    color: #edf2f7;
+    padding: 6px 10px;
+    font-size: 12px;
+    outline: none;
+    margin: 0 6px 8px 6px;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .sidebar-search-input:focus {
+    border-color: #ff5a36;
+  }
+
+  .notes-list-scroll,
+  .sandboxes-list-scroll {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .sqlite-item-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #9ca3af;
+    border-radius: 4px;
+    margin: 1px 6px;
+    transition: background-color 0.1s;
+  }
+
+  .sqlite-item-row:hover {
+    background-color: #1a1a24;
+    color: #edf2f7;
+  }
+
+  .sqlite-item-row.active {
+    background-color: #ff5a3611;
+    color: #edf2f7;
+    border-left: 2px solid #ff5a36;
+  }
+
+  .item-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .item-icon {
+    flex-shrink: 0;
+    color: #6b7280;
+  }
+
+  .item-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .item-delete-btn {
+    background: none;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 2px;
     border-radius: 3px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.1s, color 0.1s;
+  }
+
+  .sqlite-item-row:hover .item-delete-btn {
+    opacity: 1;
+  }
+
+  .item-delete-btn:hover {
+    color: #ff5a36;
+  }
+
+  .sidebar-empty-hint {
+    padding: 20px;
+    text-align: center;
+    color: #4a5568;
+    font-size: 12px;
   }
 
   .empty-tree-state {
@@ -2201,122 +1918,12 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     font-size: 13px;
   }
 
-  .empty-tree-state .subtitle {
-    font-size: 11px;
-    opacity: 0.7;
-    margin-top: 4px;
-  }
-
-  .sidebar-empty-hint {
-    padding: 12px;
-    font-size: 12px;
-    color: #4a5568;
-    text-align: center;
-  }
-
-  .notes-explorer {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    gap: 8px;
-    overflow: hidden;
-  }
-
-  .sidebar-search-input {
-    background-color: #121218;
-    border: 1px solid #2d3748;
-    border-radius: 4px;
-    padding: 6px 10px;
-    color: #edf2f7;
-    font-size: 12px;
-    outline: none;
-    margin: 0 6px;
-  }
-
-  .sidebar-search-input:focus {
-    border-color: #ff5a36;
-  }
-
-  .notes-list-scroll,
-  .sandboxes-list-scroll {
-    flex: 1;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 0 4px;
-  }
-
-  .sqlite-item-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 6px 10px;
-    border-radius: 4px;
-    cursor: pointer;
-    color: #a0aec0;
-    font-size: 13px;
-    transition: background-color 0.15s, color 0.15s;
-  }
-
-  .sqlite-item-row:hover,
-  .sqlite-item-row.active {
-    background-color: #1a1a24;
-    color: #edf2f7;
-  }
-
-  .sqlite-item-row.active {
-    border-left: 2px solid #ff5a36;
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-  }
-
-  .item-title-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  :global(.item-icon) {
-    color: #718096;
-    flex-shrink: 0;
-  }
-
-  .item-title {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex: 1;
-  }
-
-  .item-delete-btn {
-    background: none;
-    border: none;
-    color: #718096;
-    cursor: pointer;
-    padding: 2px;
-    border-radius: 3px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 0.1s, background-color 0.1s;
-  }
-
-  .item-delete-btn:hover {
-    color: #ff5a36;
-    background-color: #ff5a361c;
-  }
-
   .editor-panel {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background-color: #121217;
-    height: 100%;
     overflow: hidden;
-    position: relative;
+    background-color: #0b0b0f;
     min-width: 0;
   }
 
@@ -2325,19 +1932,20 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   }
 
   .editor-header {
-    height: 44px;
-    padding: 0 16px;
+    height: 40px;
+    min-height: 40px;
     background-color: #0c0c12;
     border-bottom: 1px solid #1a1a24;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding: 0 16px;
   }
 
   .file-info {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -2345,16 +1953,6 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
     font-size: 13px;
     font-weight: 600;
     color: #edf2f7;
-    white-space: nowrap;
-  }
-
-  .active-file-path {
-    font-size: 11px;
-    color: #4a5568;
-    max-width: 300px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .header-actions {
@@ -2365,61 +1963,43 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
 
   .header-action-btn {
     background: none;
-    border: 1px solid #2d3748;
-    color: #a0aec0;
+    border: none;
+    color: #9ca3af;
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
-    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+    transition: background-color 0.15s, color 0.15s;
   }
 
-  .header-action-btn:hover:not(:disabled),
-  .header-action-btn.active {
-    background-color: #2d3748;
+  .header-action-btn:hover {
+    background-color: #1a1a24;
     color: #edf2f7;
-    border-color: #4a5568;
+  }
+
+  .header-action-btn.run {
+    color: #48bb78;
+  }
+
+  .header-action-btn.run:hover {
+    background-color: #48bb7818;
+  }
+
+  .header-action-btn.stop {
+    color: #ff5a36;
+  }
+
+  .header-action-btn.stop:hover {
+    background-color: #ff5a3618;
   }
 
   .header-action-btn:disabled {
     opacity: 0.3;
     cursor: not-allowed;
-  }
-
-  .header-action-btn.run {
-    border-color: #48bb7855;
-    color: #48bb78;
-  }
-
-  .header-action-btn.run:hover {
-    background-color: #48bb781a;
-  }
-
-  .header-action-btn.stop {
-    border-color: #ff5a3655;
-    color: #ff5a36;
-  }
-
-  .header-action-btn.stop:hover {
-    background-color: #ff5a361a;
-  }
-
-  .divider {
-    color: #2d3748;
-  }
-
-  .split-select {
-    background-color: #121217;
-    border: 1px solid #2d3748;
-    color: #edf2f7;
-    padding: 4px 6px;
-    border-radius: 4px;
-    font-size: 12px;
-    outline: none;
-    cursor: pointer;
   }
 
   .workspace-split {
@@ -2432,911 +2012,297 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   .editor-body {
     flex: 1;
     display: flex;
+    flex-direction: column;
     overflow: hidden;
-    background-color: #14141a;
     min-width: 0;
   }
 
   .editor-container-inner {
-    position: relative;
     flex: 1;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .editor-container-inner :global(.cm-editor),
-  .notes-cm-container :global(.cm-editor),
-  .sandbox-cm-container :global(.cm-editor) {
-    height: 100%;
-    width: 100%;
-  }
-
-  .split-view-container {
-    width: 420px;
-    min-width: 300px;
-    max-width: 560px;
-    background-color: #0c0c12;
-    border-left: 1px solid #1a1a24;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .split-header-bar {
-    height: 38px;
-    padding: 0 12px;
-    border-bottom: 1px solid #1a1a24;
-    background-color: #0a0a0f;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 11px;
-    font-weight: 600;
-    color: #a0aec0;
-    gap: 8px;
-  }
-
-  .split-header-bar span {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .split-controls {
-    display: flex;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-
-  .split-btn {
-    background-color: #1c1c28;
-    color: #edf2f7;
-    border: 1px solid #2d3748;
-    padding: 3px 8px;
-    font-size: 11px;
-    border-radius: 4px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .split-btn.save {
-    background-color: #ff5a36;
-    color: white;
-    border: none;
-  }
-
-  .split-btn:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-  }
-
-  .split-body-content {
-    flex: 1;
-    overflow: hidden;
-    background-color: #14141a;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  .notes-cm-container,
-  .sandbox-cm-container {
-    flex: 1;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .notes-cm-container.full,
-  .sandbox-cm-container.full {
-    width: 100%;
-    height: 100%;
-  }
-
-  .markdown-rendered-view {
-    padding: 16px;
     overflow-y: auto;
-    height: 100%;
-    box-sizing: border-box;
-    font-size: 13px;
-    line-height: 1.6;
-    color: #cbd5e0;
   }
 
-  .markdown-rendered-view.full {
-    background-color: #14141a;
-  }
-
-  .markdown-rendered-view h1 {
-    font-size: 18px;
-    color: #edf2f7;
-    border-bottom: 1px solid #2d3748;
-    padding-bottom: 4px;
-    margin-top: 0;
-  }
-
-  .markdown-rendered-view h2 {
-    font-size: 15px;
-    color: #edf2f7;
-    margin-top: 14px;
-  }
-
-  .markdown-rendered-view h3 {
-    font-size: 13px;
-    color: #ff8c73;
-    margin-top: 12px;
-  }
-
-  .markdown-rendered-view blockquote {
-    border-left: 3px solid #ff5a36;
-    margin: 8px 0;
-    padding-left: 12px;
-    color: #a0aec0;
-    font-style: italic;
-  }
-
-  .markdown-rendered-view .inline-codeblock {
-    background-color: #0c0c12;
-    border: 1px solid #2d3748;
-    border-radius: 4px;
-    padding: 8px 12px;
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-    color: #ff8c73;
-    overflow-x: auto;
-    margin: 6px 0;
-  }
-
-  .markdown-rendered-view p {
-    margin: 8px 0;
-  }
-
-  .split-empty {
+  .editor-empty-state {
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
-    color: #4a5568;
-    font-size: 13px;
-    padding: 20px;
+  }
+
+  .welcome-box {
     text-align: center;
+    color: #718096;
   }
 
-  .markdown-tab-panel {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .note-editing-header {
-    height: 48px;
-    padding: 0 16px;
-    background-color: #0c0c12;
-    border-bottom: 1px solid #1a1a24;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .note-header-actions {
-    display: flex;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  .note-title-input {
-    background: none;
-    border: none;
-    color: #edf2f7;
-    font-size: 16px;
-    font-weight: 700;
-    outline: none;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .note-header-actions {
-    display: flex;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  .note-editing-body {
-    flex: 1;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .sandbox-tab-panel {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .sandbox-header-controls {
-    padding: 10px 16px;
-    background-color: #0c0c12;
-    border-bottom: 1px solid #1a1a24;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .sandbox-title-container {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  .sandbox-title-input {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    color: #edf2f7;
-    font-size: 16px;
-    font-weight: 700;
-    padding: 4px 8px;
-    outline: none;
-    transition: border-color 0.15s, background-color 0.15s;
-    min-width: 180px;
-    max-width: 320px;
-  }
-
-  .sandbox-title-input:hover {
-    border-color: #2d3748;
-    background-color: #121218;
-  }
-
-  .sandbox-title-input:focus {
-    border-color: #ff5a36;
-    background-color: #121218;
-  }
-
-  .sandbox-id-badge {
-    font-size: 10px;
-    background-color: #1a1a26;
-    border: 1px solid #ff5a3633;
-    color: #ff8c73;
-    padding: 3px 8px;
-    border-radius: 12px;
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    letter-spacing: 0.4px;
-  }
-
-  .sandbox-actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .action-btn {
-    background-color: #1a1a24;
+  .welcome-box h1 {
+    margin: 0 0 8px 0;
+    font-size: 24px;
     color: #9ca3af;
-    border: 1px solid #2d3748;
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 12px;
     font-weight: 600;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    transition: background-color 0.15s, color 0.15s;
-  }
-
-  .action-btn:hover,
-  .action-btn.active {
-    background-color: #2d3748;
-    color: #edf2f7;
-  }
-
-  .action-btn.primary {
-    background-color: #ff5a36;
-    color: white;
-    border: none;
-  }
-
-  .action-btn.primary:hover {
-    background-color: #e04b28;
-  }
-
-  .action-btn.run {
-    border-color: #48bb7855;
-    color: #48bb78;
-  }
-
-  .action-btn.run:hover {
-    background-color: #48bb781a;
-  }
-
-  .action-btn.stop {
-    border-color: #ff5a3655;
-    color: #ff5a36;
-  }
-
-  .action-btn.stop:hover {
-    background-color: #ff5a361a;
-  }
-
-  .action-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-
-  .action-btn.guide-btn {
-    border-color: #6366f155;
-    color: #818cf8;
-  }
-
-  .action-btn.guide-btn:hover {
-    background-color: #6366f11a;
-    color: #a5b4fc;
-  }
-
-  .sandbox-working-split {
-    flex: 1;
-    display: flex;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  .sandbox-virtual-explorer {
-    width: 220px;
-    min-width: 180px;
-    border-right: 1px solid #1a1a24;
-    background-color: #0a0a0f;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .v-explorer-header {
-    height: 34px;
-    padding: 0 10px;
-    border-bottom: 1px solid #1a1a24;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 11px;
-    font-weight: 700;
-    color: #6b7280;
-    text-transform: uppercase;
-  }
-
-  .v-explorer-title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .v-explorer-btn {
-    background: none;
-    border: none;
-    color: #a0aec0;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-  }
-
-  .v-explorer-btn:hover {
-    color: #ff5a36;
-  }
-
-  .virtual-files-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .v-file-row-wrap {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    border-radius: 4px;
-  }
-
-  .v-file-row-wrap.active {
-    background-color: #1c1c28;
-  }
-
-  .v-file-row {
-    background: none;
-    border: none;
-    flex: 1;
-    text-align: left;
-    padding: 6px 8px;
-    color: #a0aec0;
-    font-size: 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    overflow: hidden;
-  }
-
-  :global(.v-file-icon) {
-    color: #718096;
-    flex-shrink: 0;
-  }
-
-  .v-file-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .v-file-row:hover {
-    color: #edf2f7;
-  }
-
-  .v-file-delete {
-    background: none;
-    border: none;
-    color: #4a5568;
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 3px;
-    display: flex;
-    align-items: center;
-  }
-
-  .v-file-delete:hover {
-    color: #ff5a36;
-    background-color: #ff5a3618;
-  }
-
-  .sandbox-editor-wrapper {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background-color: #14141a;
-    min-width: 0;
-  }
-
-  .v-file-info {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 12px;
-    background-color: #0c0c12;
-    border-bottom: 1px solid #1a1a24;
-  }
-
-  .v-file-active-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: #edf2f7;
-  }
-
-  .v-file-active-path {
-    font-size: 11px;
-    color: #718096;
-  }
-
-  .unsaved-pill {
-    font-size: 10px;
-    background-color: #ff5a3622;
-    color: #ff5a36;
-    border: 1px solid #ff5a3644;
-    padding: 1px 6px;
-    border-radius: 10px;
-  }
-
-  .sandbox-notes-pane {
-    width: 440px;
-    min-width: 320px;
-    max-width: 600px;
-    border-left: 1px solid #1a1a24;
-    background-color: #0c0c12;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .sandbox-notes-header {
-    height: 38px;
-    padding: 0 12px;
-    background-color: #0a0a0f;
-    border-bottom: 1px solid #1a1a24;
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-  }
-
-  .sandbox-notes-header .tabs {
-    display: flex;
-    gap: 4px;
-  }
-
-  .notes-tab-btn {
-    background: none;
-    border: 1px solid transparent;
-    color: #718096;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: color 0.15s, background-color 0.15s;
-  }
-
-  .notes-tab-btn:hover {
-    color: #edf2f7;
-    background-color: #1a1a24;
-  }
-
-  .notes-tab-btn.active {
-    color: #ff5a36;
-    background-color: #ff5a3614;
-    border-color: #ff5a3633;
-  }
-
-  .sandbox-notes-body {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background-color: #14141a;
-  }
-
-  .split-pane-wrapper {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    padding: 12px;
-    gap: 8px;
-  }
-
-  .pane-action-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .pane-title {
-    font-size: 10px;
-    font-weight: 700;
-    color: #6b7280;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  .notes-raw-textarea {
-    flex: 1;
-    background-color: #0c0c12;
-    border: 1px solid #2d3748;
-    border-radius: 6px;
-    padding: 12px;
-    color: #edf2f7;
-    font-family: inherit;
-    font-size: 13px;
-    resize: none;
-    outline: none;
-    line-height: 1.5;
-  }
-
-  .notes-raw-textarea.code-family {
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-  }
-
-  .notes-raw-textarea:focus {
-    border-color: #ff5a36;
-  }
-
-  .text-view-box {
-    flex: 1;
-    border: 1px solid #1a1a24;
-    background-color: #0c0c12;
-    border-radius: 6px;
-    overflow-y: auto;
-  }
-
-  .empty-notif {
-    color: #4a5568;
-    font-style: italic;
-    text-align: center;
-    margin-top: 40px;
-    font-size: 13px;
-  }
-
-  .html-preview-frame-container {
-    flex: 1;
-    border: 1px solid #1a1a24;
-    background-color: #0c0c12;
-    border-radius: 6px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .html-canvas-iframe {
-    flex: 1;
-    border: none;
-    width: 100%;
-    height: 100%;
-    background: #0c0c12;
-  }
-
-  .yaml-config-panel {
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    height: 100%;
-    box-sizing: border-box;
-  }
-
-  .yaml-config-header h3 {
-    margin: 0 0 6px 0;
-    color: #edf2f7;
-    font-size: 16px;
-  }
-
-  .yaml-config-header p {
-    margin: 0;
-    color: #718096;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .yaml-config-header code {
-    color: #ff5a36;
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-  }
-
-  .yaml-textarea {
-    flex: 1;
-    background-color: #0c0c12;
-    border: 1px solid #2d3748;
-    border-radius: 8px;
-    color: #e2e8f0;
-    font-family: 'Fira Code', monospace;
-    font-size: 13px;
-    padding: 16px;
-    outline: none;
-    resize: none;
-    min-height: 200px;
-  }
-
-  .yaml-textarea:focus {
-    border-color: #ff5a36;
-  }
-
-  .yaml-unsaved-hint {
-    margin: 0;
-    font-size: 12px;
-    color: #ff5a36;
-  }
-
-  .console-drawer {
-    height: 160px;
-    background-color: #08080c;
-    border-top: 1px solid #1a1a24;
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-  }
-
-  .console-header {
-    background-color: #0c0c12;
-    padding: 6px 16px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid #1a1a24;
-  }
-
-  .console-title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #6b7280;
-    letter-spacing: 0.4px;
-  }
-
-  .console-actions {
-    display: flex;
-    gap: 12px;
-  }
-
-  .console-btn {
-    background: none;
-    border: none;
-    color: #718096;
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .console-btn:hover {
-    color: #edf2f7;
-  }
-
-  .console-body {
-    flex: 1;
-    padding: 12px 16px;
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-    color: #cbd5e0;
-    overflow-y: auto;
-    background-color: #08080c;
-  }
-
-  .console-line {
-    line-height: 1.5;
-    white-space: pre-wrap;
   }
 
   .console-restore-bar {
     height: 28px;
     background-color: #0c0c12;
     border-top: 1px solid #1a1a24;
-    color: #718096;
-    font-size: 11px;
-    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
+    color: #6b7280;
+    font-size: 11px;
     cursor: pointer;
+    border-bottom: none;
     border-left: none;
     border-right: none;
     width: 100%;
+    transition: color 0.15s, background-color 0.15s;
     flex-shrink: 0;
   }
 
   .console-restore-bar:hover {
+    color: #edf2f7;
+    background-color: #12121a;
+  }
+
+  .toast-container {
+    position: fixed;
+    bottom: 40px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 9999;
+    pointer-events: none;
+  }
+
+  .toast {
+    background-color: #1a1a26;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: #edf2f7;
+    font-size: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    pointer-events: all;
+    animation: slideIn 0.2s ease-out;
+  }
+
+  .toast.success {
+    border-left: 3px solid #48bb78;
+  }
+
+  .toast.error {
+    border-left: 3px solid #ff5a36;
+  }
+
+  .toast.info {
+    border-left: 3px solid #569CD6;
+  }
+
+  .toast-message {
+    line-height: 1.4;
+  }
+
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9998;
+  }
+
+  .modal-box {
+    background-color: #14141c;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    width: 420px;
+    max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+
+  .modal-header {
+    padding: 16px 20px 8px 20px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #edf2f7;
+    border-bottom: 1px solid #1a1a26;
+  }
+
+  .modal-body {
+    padding: 16px 20px;
+  }
+
+  .modal-input {
+    width: 100%;
+    background-color: #12121a;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    color: #edf2f7;
+    padding: 8px 12px;
+    font-size: 13px;
+    outline: none;
+    font-family: 'Inter', sans-serif;
+    box-sizing: border-box;
+  }
+
+  .modal-input:focus {
+    border-color: #ff5a36;
+  }
+
+  .modal-footer {
+    padding: 12px 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    border-top: 1px solid #1a1a26;
+  }
+
+  .modal-btn {
+    background: none;
+    border: 1px solid #2d3748;
+    color: #9ca3af;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: background-color 0.15s, color 0.15s;
+  }
+
+  .modal-btn:hover {
     background-color: #1a1a24;
     color: #edf2f7;
   }
 
+  .modal-btn.primary {
+    background-color: #ff5a36;
+    border-color: #ff5a36;
+    color: white;
+  }
+
+  .modal-btn.primary:hover {
+    background-color: #e04b28;
+  }
+
+  .modal-btn.secondary:hover {
+    background-color: #2d3748;
+  }
+
+  .guide-modal {
+    width: 520px;
+  }
+
+  .guide-body {
+    max-height: 60vh;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #cbd5e0;
+  }
+
+  .guide-body code {
+    background-color: #1a1a26;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #ff5a36;
+  }
+
+  .sandbox-modal {
+    width: 480px;
+  }
+
+  .sandbox-modal-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #9ca3af;
+    margin-bottom: 6px;
+    margin-top: 12px;
+  }
+
+  .sandbox-modal-label:first-child {
+    margin-top: 0;
+  }
+
+  .templates-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 6px;
+  }
+
+  .template-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #12121a;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+    color: #9ca3af;
+    font-size: 12px;
+    transition: border-color 0.15s, background-color 0.15s;
+  }
+
+  .template-option:hover {
+    border-color: #4a5568;
+    background-color: #1a1a26;
+  }
+
+  .template-option.selected {
+    border-color: #ff5a36;
+    background-color: #ff5a3611;
+  }
+
+  .template-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .template-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .settings-view-panel {
     flex: 1;
-    padding: 40px;
     display: flex;
     justify-content: center;
     align-items: flex-start;
+    padding: 40px;
     overflow-y: auto;
-    box-sizing: border-box;
   }
 
   .settings-card {
     background-color: #0c0c12;
     border: 1px solid #1a1a24;
-    border-radius: 12px;
-    width: 600px;
-    max-width: 100%;
+    border-radius: 8px;
     padding: 32px;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    max-width: 600px;
+    width: 100%;
   }
 
   .settings-card h2 {
     margin: 0 0 8px 0;
     font-size: 18px;
-    color: #edf2f7;
-  }
-
-  .settings-desc {
-    color: #718096;
-    font-size: 13px;
-    line-height: 1.5;
-    margin: 0 0 24px 0;
-  }
-
-  .settings-divider {
-    height: 1px;
-    background-color: #1a1a24;
-    margin: 24px 0;
-  }
-
-  .initialization-banner {
-    background-color: #2c1a16;
-    border: 1px solid #ff5a3633;
-    border-radius: 8px;
-    padding: 16px;
-    margin-top: 16px;
-    margin-bottom: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .banner-content {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-  }
-
-  .warning-icon {
-    font-size: 18px;
-  }
-
-  .banner-content h4 {
-    margin: 0 0 4px 0;
-    color: #ff5a36;
-    font-size: 14px;
-    font-weight: 700;
-  }
-
-  .banner-content p {
-    margin: 0;
-    color: #cbd5e0;
-    font-size: 12px;
-    line-height: 1.5;
-  }
-
-  .initialize-btn {
-    background-color: #ff5a36;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    align-self: flex-start;
-    transition: background-color 0.1s;
-  }
-
-  .initialize-btn:hover {
-    background-color: #e04b28;
-  }
-
-  .derived-path-display {
-    background-color: #121217;
-    border: 1px solid #1a1a24;
-    border-radius: 6px;
-    padding: 12px;
-    margin-bottom: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .derived-label {
-    font-size: 11px;
-    color: #718096;
-    font-weight: 600;
-  }
-
-  .derived-code {
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-    color: #48bb78;
-  }
-
-  .settings-field-group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-bottom: 24px;
-  }
-
-  .settings-field-group label {
-    font-size: 12px;
     font-weight: 600;
     color: #edf2f7;
   }
@@ -3344,18 +2310,19 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   .settings-input-row {
     display: flex;
     gap: 8px;
+    margin: 16px 0;
   }
 
   .settings-path-input {
     flex: 1;
-    background-color: #121217;
+    background-color: #12121a;
     border: 1px solid #2d3748;
-    border-radius: 6px;
-    padding: 8px 12px;
+    border-radius: 4px;
     color: #edf2f7;
+    padding: 8px 12px;
     font-size: 13px;
     outline: none;
-    min-width: 0;
+    font-family: 'Inter', sans-serif;
   }
 
   .settings-path-input:focus {
@@ -3363,84 +2330,71 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   }
 
   .settings-browse-btn {
-    background-color: #2d3748;
-    color: #edf2f7;
-    border: none;
-    border-radius: 6px;
-    padding: 0 16px;
-    font-size: 13px;
-    font-weight: 600;
+    background: none;
+    border: 1px solid #2d3748;
+    color: #9ca3af;
+    padding: 8px 16px;
+    border-radius: 4px;
     cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.15s, color 0.15s;
     white-space: nowrap;
   }
 
   .settings-browse-btn:hover {
-    background-color: #4a5568;
+    background-color: #1a1a24;
+    color: #edf2f7;
   }
 
-  .settings-save-row {
-    display: flex;
-    justify-content: flex-end;
+  .initialize-btn {
+    background-color: #ff5a36;
+    border: none;
+    color: white;
+    padding: 8px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background-color 0.15s;
+    margin-bottom: 16px;
+  }
+
+  .initialize-btn:hover {
+    background-color: #e04b28;
   }
 
   .settings-save-btn {
     background-color: #ff5a36;
-    color: white;
     border: none;
+    color: white;
+    padding: 10px 24px;
     border-radius: 6px;
-    padding: 8px 24px;
-    font-size: 13px;
-    font-weight: 600;
     cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background-color 0.15s;
   }
 
   .settings-save-btn:hover {
     background-color: #e04b28;
   }
 
-  .editor-empty-state {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    padding: 40px;
-    color: #718096;
-    background-color: #121217;
-  }
-
-  .welcome-box {
-    text-align: center;
-    max-width: 420px;
-  }
-
-  .welcome-box h1 {
-    font-size: 20px;
-    color: #edf2f7;
-    margin-bottom: 8px;
-  }
-
-  .welcome-box p {
-    font-size: 13px;
-    line-height: 1.6;
-    margin-bottom: 20px;
-  }
-
-  .action-btn {
-    margin: 0 auto;
+  .settings-save-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
   }
 
   .status-bar {
     height: 24px;
+    min-height: 24px;
     background-color: #0c0c12;
     border-top: 1px solid #1a1a24;
-    padding: 0 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding: 0 12px;
     font-size: 11px;
     color: #6b7280;
-    user-select: none;
-    flex-shrink: 0;
   }
 
   .status-left {
@@ -3452,311 +2406,581 @@ I want to create a virtual sandbox experiment for: [DESCRIBE YOUR PROJECT GOALS]
   .status-indicator {
     width: 6px;
     height: 6px;
-    background-color: #4b5563;
     border-radius: 50%;
+    background-color: #4b5563;
+    flex-shrink: 0;
   }
 
   .status-indicator.running {
     background-color: #48bb78;
-    box-shadow: 0 0 8px #48bb78;
+    box-shadow: 0 0 4px #48bb78;
   }
 
-  .status-right {
-    display: flex;
-    align-items: center;
-    gap: 16px;
+  .status-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .lang-tag {
-    background-color: #1a1a24;
-    color: #cbd5e0;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 600;
-  }
-
-  .toast-container {
-    position: fixed;
-    top: 20px;
-    right: 20px;
+  /* Sandbox tab styles */
+  .sandbox-tab-panel {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    z-index: 99999;
-    pointer-events: none;
-  }
-
-  .toast {
-    pointer-events: auto;
-    background-color: #0c0c12;
-    border-left: 4px solid #4b5563;
-    border-radius: 6px;
-    padding: 10px 16px;
-    color: #edf2f7;
-    font-size: 13px;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
-    animation: slideIn 0.2s ease-out;
-    min-width: 200px;
-    max-width: 350px;
-  }
-
-  .toast.success {
-    border-left-color: #48bb78;
-  }
-
-  .toast.error {
-    border-left-color: #ff5a36;
-  }
-
-  .modal-backdrop {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    background-color: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 99998;
-  }
-
-  .modal-box {
-    background-color: #0c0c12;
-    border: 1px solid #1a1a24;
-    border-radius: 12px;
-    width: 400px;
-    max-width: 90%;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7);
-    animation: modalScale 0.15s ease-out;
-  }
-
-  .modal-box.guide-modal {
-    width: 540px;
-    max-width: 95%;
-  }
-
-  .modal-box.sandbox-modal {
-    width: 460px;
-    max-width: 95%;
-  }
-
-  .sandbox-modal-label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-    color: #a0aec0;
-    margin-bottom: 6px;
-    margin-top: 16px;
-  }
-
-  .sandbox-modal-label:first-of-type {
-    margin-top: 0;
-  }
-
-  .templates-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .template-option {
-    background-color: #121217;
-    border: 1px solid #2d3748;
-    border-radius: 8px;
-    padding: 12px 8px;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    transition: border-color 0.15s, background-color 0.15s;
-    color: #a0aec0;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .template-option:hover {
-    background-color: #1a1a24;
-    border-color: #4a5568;
-    color: #edf2f7;
-  }
-
-  .template-option.selected {
-    border-color: #ff5a36;
-    background-color: #ff5a3610;
-    color: #edf2f7;
-  }
-
-  .template-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .template-name {
-    text-align: center;
-    line-height: 1.2;
-  }
-
-  .guide-body {
-    max-height: 400px;
-    overflow-y: auto;
-    font-size: 13px;
-    line-height: 1.5;
-    color: #cbd5e0;
-    text-align: left;
-  }
-
-  .guide-body h4 {
-    margin: 16px 0 8px 0;
-    color: #edf2f7;
-    font-size: 14px;
-    font-weight: 700;
-  }
-
-  .guide-body ol {
-    margin: 0 0 16px 0;
-    padding-left: 20px;
-  }
-
-  .guide-body li {
-    margin-bottom: 6px;
-  }
-
-  .guide-code {
-    background-color: #121217;
-    border: 1px solid #2d3748;
-    border-radius: 6px;
-    padding: 10px;
-    font-family: 'Fira Code', monospace;
-    font-size: 12px;
-    color: #edf2f7;
-    margin: 8px 0 16px 0;
-    overflow-x: auto;
-  }
-
-  .prompt-box {
-    background-color: #08080c;
-    border: 1px solid #1a1a24;
-    border-radius: 8px;
-    margin-top: 16px;
+    height: 100%;
     overflow: hidden;
   }
 
-  .prompt-header {
-    background-color: #121217;
-    padding: 8px 12px;
+  .sandbox-header-controls {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background-color: #0c0c12;
     border-bottom: 1px solid #1a1a24;
-    font-size: 11px;
-    font-weight: 700;
-    color: #718096;
+    min-height: 40px;
+    gap: 12px;
   }
 
-  .copy-prompt-btn {
-    background-color: #ff5a36;
-    color: white;
-    border: none;
+  .sandbox-title-input {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #edf2f7;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 4px;
+    outline: none;
+    font-family: 'Inter', sans-serif;
+    min-width: 200px;
+  }
+
+  .sandbox-title-input:hover {
+    border-color: #2d3748;
+  }
+
+  .sandbox-title-input:focus {
+    border-color: #ff5a36;
+    background-color: #12121a;
+  }
+
+  .sandbox-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .action-btn {
+    background: none;
+    border: 1px solid #2d3748;
+    color: #9ca3af;
     padding: 4px 10px;
     border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
     cursor: pointer;
-    transition: background-color 0.1s;
-  }
-
-  .copy-prompt-btn:hover {
-    background-color: #e04b28;
-  }
-
-  .prompt-preview {
-    padding: 12px;
-    margin: 0;
-    font-family: 'Fira Code', monospace;
     font-size: 11px;
-    color: #a0aec0;
-    white-space: pre-wrap;
-    max-height: 120px;
-    overflow-y: auto;
-    text-align: left;
-  }
-
-  .modal-header {
-    padding: 16px 20px;
-    font-size: 14px;
-    font-weight: 700;
-    color: #edf2f7;
-    border-bottom: 1px solid #1a1a24;
-  }
-
-  .modal-body {
-    padding: 20px;
-  }
-
-  .modal-input {
-    width: 100%;
-    background-color: #121217;
-    border: 1px solid #2d3748;
-    border-radius: 6px;
-    padding: 10px 12px;
-    color: #edf2f7;
-    font-size: 13px;
-    outline: none;
-    box-sizing: border-box;
-  }
-
-  .modal-input:focus {
-    border-color: #ff5a36;
-  }
-
-  .modal-footer {
-    padding: 16px 20px;
-    border-top: 1px solid #1a1a24;
+    font-weight: 500;
     display: flex;
-    justify-content: flex-end;
-    gap: 10px;
+    align-items: center;
+    gap: 4px;
+    transition: background-color 0.15s, color 0.15s;
+    white-space: nowrap;
   }
 
-  .modal-btn {
-    padding: 8px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 6px;
+  .action-btn:hover {
+    background-color: #1a1a24;
+    color: #edf2f7;
+  }
+
+  .action-btn.run {
+    color: #48bb78;
+  }
+
+  .action-btn.run:hover {
+    background-color: #48bb7818;
+  }
+
+  .action-btn.stop {
+    color: #ff5a36;
+  }
+
+  .action-btn.stop:hover {
+    background-color: #ff5a3618;
+  }
+
+  .action-btn.primary {
+    color: #ff5a36;
+    border-color: #ff5a3655;
+  }
+
+  .action-btn.primary:hover {
+    background-color: #ff5a3618;
+  }
+
+  .action-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .sandbox-working-split {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .sandbox-virtual-explorer {
+    width: 200px;
+    min-width: 160px;
+    max-width: 260px;
+    background-color: #0c0c12;
+    border-right: 1px solid #1a1a24;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .v-explorer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #6b7280;
+    letter-spacing: 0.3px;
+    border-bottom: 1px solid #1a1a24;
+    flex-shrink: 0;
+  }
+
+  .v-explorer-btn {
+    background: none;
+    border: 1px solid #2d3748;
+    color: #a0aec0;
+    padding: 2px 6px;
+    border-radius: 4px;
     cursor: pointer;
-    border: none;
+    display: flex;
+    align-items: center;
+    transition: background-color 0.15s, color 0.15s;
   }
 
-  .modal-btn.primary {
-    background-color: #ff5a36;
-    color: white;
-  }
-
-  .modal-btn.primary:hover {
-    background-color: #e04b28;
-  }
-
-  .modal-btn.secondary {
+  .v-explorer-btn:hover {
     background-color: #2d3748;
     color: #edf2f7;
   }
 
-  .modal-btn.secondary:hover {
-    background-color: #4a5568;
+  .virtual-files-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
   }
 
-  @keyframes slideIn {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+  .v-file-row-wrap {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: background-color 0.1s;
   }
 
-  @keyframes modalScale {
-    from { transform: scale(0.95); opacity: 0; }
-    to { transform: scale(1); opacity: 1; }
+  .v-file-row-wrap:hover {
+    background-color: #1a1a24;
+  }
+
+  .v-file-row-wrap.active {
+    background-color: #ff5a3611;
+    border-left: 2px solid #ff5a36;
+  }
+
+  .v-file-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    color: #9ca3af;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 0;
+  }
+
+  .v-file-icon {
+    flex-shrink: 0;
+    color: #6b7280;
+  }
+
+  .v-file-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .v-file-delete {
+    background: none;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.1s, color 0.1s;
+  }
+
+  .v-file-row-wrap:hover .v-file-delete {
+    opacity: 1;
+  }
+
+  .v-file-delete:hover {
+    color: #ff5a36;
+  }
+
+  .sandbox-editor-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .sandbox-cm-container.full {
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Restored notes pane */
+  .sandbox-notes-pane {
+    width: 320px;
+    min-width: 260px;
+    max-width: 400px;
+    background-color: #0c0c12;
+    border-left: 1px solid #1a1a24;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sandbox-notes-header {
+    border-bottom: 1px solid #1a1a24;
+    padding: 4px 8px;
+    flex-shrink: 0;
+  }
+
+  .sandbox-notes-header .tabs {
+    display: flex;
+    gap: 2px;
+  }
+
+  .notes-tab-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: #6b7280;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background-color 0.1s, color 0.1s;
+    white-space: nowrap;
+  }
+
+  .notes-tab-btn:hover {
+    background-color: #1a1a24;
+    color: #edf2f7;
+  }
+
+  .notes-tab-btn.active {
+    background-color: #ff5a3611;
+    color: #ff5a36;
+    border-color: #ff5a3633;
+  }
+
+  .sandbox-notes-body {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .split-pane-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .pane-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    border-bottom: 1px solid #1a1a24;
+    flex-shrink: 0;
+  }
+
+  .pane-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .split-btn {
+    background: none;
+    border: 1px solid #2d3748;
+    color: #9ca3af;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background-color 0.15s, color 0.15s;
+  }
+
+  .split-btn:hover {
+    background-color: #2d3748;
+    color: #edf2f7;
+  }
+
+  .notes-raw-textarea {
+    flex: 1;
+    background-color: #12121a;
+    border: none;
+    color: #e2e8f0;
+    padding: 12px;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    resize: none;
+    outline: none;
+    line-height: 1.5;
+  }
+
+  .notes-raw-textarea.code-family {
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+
+  .markdown-rendered-view {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #cbd5e0;
+  }
+
+  .markdown-rendered-view h1 { font-size: 16px; margin: 0 0 8px 0; color: #edf2f7; }
+  .markdown-rendered-view h2 { font-size: 14px; margin: 0 0 6px 0; color: #edf2f7; }
+  .markdown-rendered-view h3 { font-size: 13px; margin: 0 0 4px 0; color: #edf2f7; }
+  .markdown-rendered-view p { margin: 0 0 6px 0; }
+  .markdown-rendered-view blockquote {
+    border-left: 3px solid #ff5a36;
+    padding-left: 12px;
+    margin: 8px 0;
+    color: #9ca3af;
+    font-style: italic;
+  }
+  .markdown-rendered-view li { margin: 2px 0 2px 16px; }
+  .markdown-rendered-view pre.inline-codeblock {
+    background-color: #1a1a26;
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .markdown-rendered-view pre.inline-codeblock code {
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #e2e8f0;
+  }
+
+  .text-view-box {
+    border: none;
+    background-color: transparent;
+  }
+
+  .empty-notif {
+    color: #6b7280;
+    font-style: italic;
+    font-size: 11px;
+  }
+
+  .html-preview-frame-container {
+    flex: 1;
+    overflow: hidden;
+    background-color: #ffffff;
+  }
+
+  .html-canvas-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+  }
+
+  .yaml-config-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .yaml-config-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid #1a1a24;
+    flex-shrink: 0;
+  }
+
+  .yaml-config-header h3 {
+    margin: 0 0 4px 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: #edf2f7;
+  }
+
+  .yaml-config-header p {
+    margin: 0;
+    font-size: 11px;
+    color: #6b7280;
+    line-height: 1.4;
+  }
+
+  .yaml-config-header code {
+    background-color: #1a1a26;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #ff5a36;
+  }
+
+  .yaml-textarea {
+    flex: 1;
+    background-color: #12121a;
+    border: none;
+    color: #e2e8f0;
+    padding: 12px;
+    font-size: 11px;
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+    resize: none;
+    outline: none;
+    line-height: 1.6;
+    tab-size: 2;
+  }
+
+  .yaml-unsaved-hint {
+    padding: 6px 12px;
+    margin: 0;
+    font-size: 10px;
+    color: #ff5a36;
+    background-color: #ff5a3611;
+    border-top: 1px solid #ff5a3622;
+    flex-shrink: 0;
+  }
+
+  .action-btn.active {
+    border-color: #ff5a3655;
+    color: #ff5a36;
+    background-color: #ff5a3611;
+  }
+
+  .sandbox-fs-explorer {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    gap: 8px;
+  }
+
+  .virtual-folder-group {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 2px;
+  }
+
+  .virtual-folder-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: #a0aec0;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .virtual-folder-header:hover {
+    background-color: #1a1a24;
+    color: #edf2f7;
+  }
+
+  .folder-arrow {
+    font-size: 8px;
+    color: #718096;
+  }
+
+  :global(.v-folder-icon) {
+    color: #ff8c73;
+  }
+
+  .v-folder-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .v-folder-count {
+    font-size: 10px;
+    color: #6b7280;
+  }
+
+  .add-sub-sandbox-btn {
+    background: none;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 2px;
+  }
+
+  .add-sub-sandbox-btn:hover {
+    color: #ff5a36;
+  }
+
+  .folder-children-list {
+    padding-left: 14px;
+    border-left: 1px solid #1c1c28;
+    margin-left: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .sqlite-item-row.nested {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .item-move-btn {
+    background: none;
+    border: none;
+    color: #4a5568;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 3px;
+  }
+
+  .item-move-btn:hover {
+    color: #ff8c73;
+    background-color: #ff8c7318;
   }
 </style>

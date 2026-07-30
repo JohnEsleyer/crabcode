@@ -22,6 +22,10 @@ export function CreateSandbox(arg1, arg2) {
   return window['go']['main']['App']['CreateSandbox'](arg1, arg2);
 }
 
+export function CreateSandboxInFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSandboxInFolder'](arg1, arg2, arg3);
+}
+
 export function DeleteNote(arg1) {
   return window['go']['main']['App']['DeleteNote'](arg1);
 }
@@ -54,6 +58,10 @@ export function GetPlaygroundDirectory() {
   return window['go']['main']['App']['GetPlaygroundDirectory']();
 }
 
+export function GetSandboxDirectory(arg1) {
+  return window['go']['main']['App']['GetSandboxDirectory'](arg1);
+}
+
 export function GetSandboxFiles(arg1) {
   return window['go']['main']['App']['GetSandboxFiles'](arg1);
 }
@@ -82,12 +90,24 @@ export function InitializeCrabFolder(arg1) {
   return window['go']['main']['App']['InitializeCrabFolder'](arg1);
 }
 
+export function InitializeEnvironment(arg1) {
+  return window['go']['main']['App']['InitializeEnvironment'](arg1);
+}
+
 export function IsDirectoryEmpty(arg1) {
   return window['go']['main']['App']['IsDirectoryEmpty'](arg1);
 }
 
+export function IsEnvironmentInitialized(arg1) {
+  return window['go']['main']['App']['IsEnvironmentInitialized'](arg1);
+}
+
 export function ListDirectory(arg1) {
   return window['go']['main']['App']['ListDirectory'](arg1);
+}
+
+export function MoveSandbox(arg1, arg2) {
+  return window['go']['main']['App']['MoveSandbox'](arg1, arg2);
 }
 
 export function OpenWorkspace(arg1) {
@@ -114,8 +134,8 @@ export function RunCommandWithEnv(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['RunCommandWithEnv'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function RunSandbox(arg1, arg2) {
-  return window['go']['main']['App']['RunSandbox'](arg1, arg2);
+export function RunSandbox(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RunSandbox'](arg1, arg2, arg3);
 }
 
 export function SaveFile(arg1, arg2) {
@@ -146,6 +166,14 @@ export function SelectFolder() {
   return window['go']['main']['App']['SelectFolder']();
 }
 
+export function StartTerminalSession(arg1, arg2) {
+  return window['go']['main']['App']['StartTerminalSession'](arg1, arg2);
+}
+
 export function StopCommand(arg1) {
   return window['go']['main']['App']['StopCommand'](arg1);
+}
+
+export function WriteTerminalInput(arg1, arg2) {
+  return window['go']['main']['App']['WriteTerminalInput'](arg1, arg2);
 }

@@ -12,6 +12,8 @@ export function CreateNote(arg1:string):Promise<main.Note>;
 
 export function CreateSandbox(arg1:string,arg2:string):Promise<main.Sandbox>;
 
+export function CreateSandboxInFolder(arg1:string,arg2:string,arg3:string):Promise<main.Sandbox>;
+
 export function DeleteNote(arg1:string):Promise<void>;
 
 export function DeletePath(arg1:string):Promise<void>;
@@ -28,6 +30,8 @@ export function GetNotes():Promise<Array<main.Note>>;
 
 export function GetPlaygroundDirectory():Promise<string>;
 
+export function GetSandboxDirectory(arg1:string):Promise<string>;
+
 export function GetSandboxFiles(arg1:string):Promise<Array<main.SandboxFile>>;
 
 export function GetSandboxes():Promise<Array<main.Sandbox>>;
@@ -42,9 +46,15 @@ export function InitTemplates():Promise<void>;
 
 export function InitializeCrabFolder(arg1:string):Promise<void>;
 
+export function InitializeEnvironment(arg1:string):Promise<void>;
+
 export function IsDirectoryEmpty(arg1:string):Promise<boolean>;
 
+export function IsEnvironmentInitialized(arg1:string):Promise<boolean>;
+
 export function ListDirectory(arg1:string):Promise<Array<main.FileNode>>;
+
+export function MoveSandbox(arg1:string,arg2:string):Promise<void>;
 
 export function OpenWorkspace(arg1:string):Promise<main.WorkspaceInfo>;
 
@@ -58,7 +68,7 @@ export function RunCommand(arg1:string,arg2:string,arg3:Array<string>,arg4:strin
 
 export function RunCommandWithEnv(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:Record<string, string>):Promise<void>;
 
-export function RunSandbox(arg1:string,arg2:string):Promise<string>;
+export function RunSandbox(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
@@ -74,4 +84,8 @@ export function SaveSandboxNotes(arg1:string,arg2:string,arg3:string):Promise<vo
 
 export function SelectFolder():Promise<string>;
 
+export function StartTerminalSession(arg1:string,arg2:string):Promise<void>;
+
 export function StopCommand(arg1:string):Promise<void>;
+
+export function WriteTerminalInput(arg1:string,arg2:string):Promise<void>;
