@@ -19,7 +19,6 @@ type App struct {
 	activeProcesses map[string]*exec.Cmd
 	activeStdins    map[string]io.WriteCloser
 	processMutex    sync.Mutex
-	workspacePath   string
 	db              *sql.DB
 	cliPath         string
 }
@@ -32,7 +31,7 @@ func NewApp() *App {
 	}
 }
 
-// startup is called when the app starts. The context is saved
+// startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	_ = a.ensureGlobalDBInitialized()
@@ -67,46 +66,27 @@ func (a *App) CloseDB() {
 	}
 }
 
-// OpenWorkspace uses the global DB
-func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
-	a.workspacePath = path
-	_ = a.ensureGlobalDBInitialized()
-
-	notes, err := a.GetNotes()
-	if err != nil {
-		notes = []Note{}
-	}
-	sandboxes, err := a.GetSandboxes()
-	if err != nil {
-		sandboxes = []Sandbox{}
-	}
-
-	return &WorkspaceInfo{
-		Path:      path,
-		Notes:     notes,
-		Sandboxes: sandboxes,
-	}, nil
-}
-
 func (a *App) migrate() error {
 	if a.db == nil {
 		return errors.New("no active database connection")
 	}
 
 	queries := []string{
-		`CREATE TABLE IF NOT EXISTS markdown_notes (
+		`CREATE TABLE IF NOT EXISTS workspaces (
 			id TEXT PRIMARY KEY,
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS sandboxes (
 			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL DEFAULT 'default',
 			name TEXT NOT NULL,
 			config_yaml TEXT NOT NULL,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS sandbox_files (
 			id TEXT PRIMARY KEY,
@@ -126,9 +106,17 @@ func (a *App) migrate() error {
 		}
 	}
 
+	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'")
 	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN markdown_note TEXT NOT NULL DEFAULT ''")
 	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN html_note TEXT NOT NULL DEFAULT ''")
 	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
+
+	// Ensure default workspace exists
+	var count int
+	_ = a.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE id = 'default'").Scan(&count)
+	if count == 0 {
+		_, _ = a.db.Exec("INSERT INTO workspaces (id, name, description, created_at, updated_at) VALUES ('default', 'Default Lab', 'Main experimentation lab workspace', DATETIME('now'), DATETIME('now'))")
+	}
 
 	return nil
 }

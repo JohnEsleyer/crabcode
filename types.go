@@ -50,16 +50,17 @@ type TemplateSpec struct {
 	RawYAML     string            `json:"rawYaml"`
 }
 
-type Note struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+type Workspace struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 type Sandbox struct {
 	ID           string `json:"id"`
+	WorkspaceID  string `json:"workspaceId"`
 	Name         string `json:"name"`
 	ConfigYAML   string `json:"configYaml"`
 	MarkdownNote string `json:"markdownNote"`
@@ -78,27 +79,19 @@ type SandboxFile struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-type WorkspaceInfo struct {
-	Path      string    `json:"path"`
-	Notes     []Note    `json:"notes"`
-	Sandboxes []Sandbox `json:"sandboxes"`
-}
-
 type GlobalSettings struct {
 	CrabRootPath    string `json:"crabRootPath"`
 	UniversalEnvDir string `json:"universalEnvDir"`
 }
 
-// FileNode represents a file or folder entry in the project directory
-type FileNode struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	IsDir bool   `json:"isDir"`
+// Backup / Export Payload Structures
+type SandboxExportData struct {
+	Sandbox Sandbox       `json:"sandbox"`
+	Files   []SandboxFile `json:"files"`
 }
 
-// WorkspaceInitInfo represents initialization status of a workspace folder
-type WorkspaceInitInfo struct {
-	Path       string `json:"path"`
-	HasDotCrab bool   `json:"hasDotCrab"`
-	Exists     bool   `json:"exists"`
+type WorkspaceBackupData struct {
+	Version   string              `json:"version"`
+	Workspace Workspace           `json:"workspace"`
+	Sandboxes []SandboxExportData `json:"sandboxes"`
 }

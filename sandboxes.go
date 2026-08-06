@@ -10,12 +10,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func (a *App) GetSandboxes() ([]Sandbox, error) {
+func (a *App) GetSandboxes(workspaceID string) ([]Sandbox, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
 	}
 
-	rows, err := a.db.Query("SELECT id, name, config_yaml, markdown_note, html_note, COALESCE(folder, ''), created_at, updated_at FROM sandboxes ORDER BY updated_at DESC")
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+
+	rows, err := a.db.Query("SELECT id, workspace_id, name, config_yaml, markdown_note, html_note, COALESCE(folder, ''), created_at, updated_at FROM sandboxes WHERE workspace_id = ? ORDER BY updated_at DESC", workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +28,7 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 	sandboxes := make([]Sandbox, 0)
 	for rows.Next() {
 		var s Sandbox
-		if err := rows.Scan(&s.ID, &s.Name, &s.ConfigYAML, &s.MarkdownNote, &s.HTMLNote, &s.Folder, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.WorkspaceID, &s.Name, &s.ConfigYAML, &s.MarkdownNote, &s.HTMLNote, &s.Folder, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sandboxes = append(sandboxes, s)
@@ -32,9 +36,13 @@ func (a *App) GetSandboxes() ([]Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (a *App) CreateSandboxInFolder(name string, templateID string, folder string) (*Sandbox, error) {
+func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID string, folder string) (*Sandbox, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
+	}
+
+	if workspaceID == "" {
+		workspaceID = "default"
 	}
 
 	templates, err := a.GetTemplates()
@@ -67,8 +75,8 @@ func (a *App) CreateSandboxInFolder(name string, templateID string, folder strin
 	htmlNote := cfg.Notes.HTML
 
 	_, err = a.db.Exec(
-		"INSERT INTO sandboxes (id, name, config_yaml, markdown_note, html_note, folder, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		id, name, configYaml, markdownNote, htmlNote, folder, now, now,
+		"INSERT INTO sandboxes (id, workspace_id, name, config_yaml, markdown_note, html_note, folder, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, workspaceID, name, configYaml, markdownNote, htmlNote, folder, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -80,6 +88,7 @@ func (a *App) CreateSandboxInFolder(name string, templateID string, folder strin
 
 	return &Sandbox{
 		ID:           id,
+		WorkspaceID:  workspaceID,
 		Name:         name,
 		ConfigYAML:   configYaml,
 		MarkdownNote: markdownNote,
@@ -90,8 +99,8 @@ func (a *App) CreateSandboxInFolder(name string, templateID string, folder strin
 	}, nil
 }
 
-func (a *App) CreateSandbox(name string, templateID string) (*Sandbox, error) {
-	return a.CreateSandboxInFolder(name, templateID, "")
+func (a *App) CreateSandbox(workspaceID string, name string, templateID string) (*Sandbox, error) {
+	return a.CreateSandboxInFolder(workspaceID, name, templateID, "")
 }
 
 func (a *App) MoveSandbox(id string, folder string) error {
