@@ -14,12 +14,13 @@
     MoveSandbox,
     RenameSandbox,
     DeleteSandbox,
-    SaveSandboxConfig,
-    SaveSandboxNotes,
     GetSandboxFiles,
     SaveSandboxFile,
     DeleteSandboxFile,
-    GetSandboxDirectory,
+    SaveSandboxNotes,
+    GetWorkspaceRuntimePath,
+    ActivateSandbox,
+    SaveWorkspaceConfig,
     RunSandbox,
     StopCommand,
     StartTerminalSession,
@@ -492,7 +493,7 @@
 
     if (sandboxTerminals.length === 0) {
       try {
-        const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+        const sandboxDir = await GetWorkspaceRuntimePath(activeWorkspaceId);
         const sbTermId = createSandboxTerminal('bash', sandboxDir);
         await StartTerminalSession(sbTermId, sandboxDir);
       } catch (_) {}
@@ -549,7 +550,7 @@
       }
 
       if (activeSandboxConfigUnsaved) {
-        await SaveSandboxConfig(activeSandboxId, activeSandboxConfig);
+        await SaveWorkspaceConfig(activeWorkspaceId, activeSandboxConfig);
         lastSavedSandboxConfig = activeSandboxConfig;
         const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
         if (si !== -1) sandboxesList[si].configYaml = activeSandboxConfig;
@@ -1044,7 +1045,7 @@
               onCloseTerminal={closeSandboxTerminal}
               onAddTerminal={async () => {
                 try {
-                  const sandboxDir = await GetSandboxDirectory(activeSandboxId);
+                  const sandboxDir = await GetWorkspaceRuntimePath(activeWorkspaceId);
                   const id = createSandboxTerminal('bash', sandboxDir);
                   await StartTerminalSession(id, sandboxDir);
                 } catch (_) {}

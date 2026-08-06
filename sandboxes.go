@@ -1,13 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 func (a *App) GetSandboxes(workspaceID string) ([]Sandbox, error) {
@@ -19,7 +18,10 @@ func (a *App) GetSandboxes(workspaceID string) ([]Sandbox, error) {
 		workspaceID = "default"
 	}
 
-	rows, err := a.db.Query("SELECT id, workspace_id, name, config_yaml, markdown_note, html_note, COALESCE(folder, ''), created_at, updated_at FROM sandboxes WHERE workspace_id = ? ORDER BY updated_at DESC", workspaceID)
+	var activeID string
+	_ = a.db.QueryRow("SELECT active_sandbox_id FROM workspaces WHERE id = ?", workspaceID).Scan(&activeID)
+
+	rows, err := a.db.Query("SELECT id, workspace_id, name, COALESCE(folder, ''), markdown_note, html_note, created_at, updated_at FROM sandboxes WHERE workspace_id = ? ORDER BY updated_at DESC", workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -28,9 +30,10 @@ func (a *App) GetSandboxes(workspaceID string) ([]Sandbox, error) {
 	sandboxes := make([]Sandbox, 0)
 	for rows.Next() {
 		var s Sandbox
-		if err := rows.Scan(&s.ID, &s.WorkspaceID, &s.Name, &s.ConfigYAML, &s.MarkdownNote, &s.HTMLNote, &s.Folder, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.WorkspaceID, &s.Name, &s.Folder, &s.MarkdownNote, &s.HTMLNote, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
+		s.IsActive = (s.ID == activeID)
 		sandboxes = append(sandboxes, s)
 	}
 	return sandboxes, nil
@@ -47,7 +50,7 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID 
 
 	templates, err := a.GetTemplates()
 	if err != nil || len(templates) == 0 {
-		return nil, fmt.Errorf("failed to load template specifications: %w", err)
+		return nil, fmt.Errorf("failed to load templates: %w", err)
 	}
 
 	var selectedTemplate TemplateSpec
@@ -66,37 +69,34 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID 
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	now := time.Now().Format(time.RFC3339)
 
-	cfg := selectedTemplate.Config
-	cfg.Name = name
-	configBytes, _ := yaml.Marshal(cfg)
-	configYaml := string(configBytes)
-
-	markdownNote := cfg.Notes.Markdown
-	htmlNote := cfg.Notes.HTML
+	markdownNote := selectedTemplate.Config.Notes.Markdown
+	htmlNote := selectedTemplate.Config.Notes.HTML
 
 	_, err = a.db.Exec(
-		"INSERT INTO sandboxes (id, workspace_id, name, config_yaml, markdown_note, html_note, folder, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, workspaceID, name, configYaml, markdownNote, htmlNote, folder, now, now,
+		"INSERT INTO sandboxes (id, workspace_id, name, folder, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		id, workspaceID, name, folder, markdownNote, htmlNote, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, f := range cfg.Files {
+	for _, f := range selectedTemplate.Files {
 		_ = a.SaveSandboxFile(id, f.Path, f.Content, f.IsDir)
 	}
 
-	return &Sandbox{
+	sb := &Sandbox{
 		ID:           id,
 		WorkspaceID:  workspaceID,
 		Name:         name,
-		ConfigYAML:   configYaml,
+		Folder:       folder,
 		MarkdownNote: markdownNote,
 		HTMLNote:     htmlNote,
-		Folder:       folder,
+		IsActive:     false,
 		CreatedAt:    now,
 		UpdatedAt:    now,
-	}, nil
+	}
+
+	return sb, nil
 }
 
 func (a *App) CreateSandbox(workspaceID string, name string, templateID string) (*Sandbox, error) {
@@ -107,7 +107,6 @@ func (a *App) MoveSandbox(id string, folder string) error {
 	if a.db == nil {
 		return errors.New("database not initialized")
 	}
-
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET folder = ?, updated_at = ? WHERE id = ?", folder, now, id)
 	return err
@@ -117,7 +116,6 @@ func (a *App) RenameSandbox(id string, name string) error {
 	if a.db == nil {
 		return errors.New("database not initialized")
 	}
-
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET name = ?, updated_at = ? WHERE id = ?", name, now, id)
 	return err
@@ -127,21 +125,8 @@ func (a *App) DeleteSandbox(id string) error {
 	if a.db == nil {
 		return errors.New("database not initialized")
 	}
-
-	if _, err := a.db.Exec("DELETE FROM sandboxes WHERE id = ?", id); err != nil {
-		return err
-	}
-	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ?", id)
-	return err
-}
-
-func (a *App) SaveSandboxConfig(id string, configYaml string) error {
-	if a.db == nil {
-		return errors.New("database not initialized")
-	}
-
-	now := time.Now().Format(time.RFC3339)
-	_, err := a.db.Exec("UPDATE sandboxes SET config_yaml = ?, updated_at = ? WHERE id = ?", configYaml, now, id)
+	_, _ = a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ?", id)
+	_, err := a.db.Exec("DELETE FROM sandboxes WHERE id = ?", id)
 	return err
 }
 
@@ -149,103 +134,15 @@ func (a *App) SaveSandboxNotes(id string, markdownNote string, htmlNote string) 
 	if a.db == nil {
 		return errors.New("database not initialized")
 	}
-
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET markdown_note = ?, html_note = ?, updated_at = ? WHERE id = ?", markdownNote, htmlNote, now, id)
 	return err
-}
-
-func (a *App) syncSandboxFromDisk(sandboxID string) error {
-	cfg, err := a.getSandboxConfig(sandboxID)
-	if err != nil {
-		return err
-	}
-	envDir := a.resolveEnvDir(cfg)
-
-	if _, statErr := os.Stat(envDir); os.IsNotExist(statErr) {
-		return nil
-	}
-
-	rows, err := a.db.Query("SELECT path, is_dir FROM sandbox_files WHERE sandbox_id = ?", sandboxID)
-	if err != nil {
-		return err
-	}
-	dbFiles := make(map[string]bool)
-	for rows.Next() {
-		var path string
-		var isDir int
-		if err := rows.Scan(&path, &isDir); err != nil {
-			rows.Close()
-			return err
-		}
-		dbFiles[path] = isDir == 1
-	}
-	rows.Close()
-
-	now := time.Now().Format(time.RFC3339)
-	diskFiles := make(map[string]bool)
-
-	_ = filepath.WalkDir(envDir, func(diskPath string, d os.DirEntry, err error) error {
-		if err != nil || d == nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(envDir, diskPath)
-		if rel == "." {
-			return nil
-		}
-		diskFiles[rel] = d.IsDir()
-
-		isDirInt := 0
-		if d.IsDir() {
-			isDirInt = 1
-		}
-
-		if _, exists := dbFiles[rel]; !exists {
-			id := fmt.Sprintf("%d", time.Now().UnixNano())
-			content := ""
-			if !d.IsDir() {
-				data, readErr := os.ReadFile(diskPath)
-				if readErr == nil {
-					content = string(data)
-				}
-			}
-			_, _ = a.db.Exec(
-				"INSERT INTO sandbox_files (id, sandbox_id, path, content, is_dir, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-				id, sandboxID, rel, content, isDirInt, now,
-			)
-		} else if !d.IsDir() {
-			data, readErr := os.ReadFile(diskPath)
-			if readErr != nil {
-				return nil
-			}
-			content := string(data)
-			var dbContent string
-			_ = a.db.QueryRow("SELECT content FROM sandbox_files WHERE sandbox_id = ? AND path = ?", sandboxID, rel).Scan(&dbContent)
-			if dbContent != content {
-				_, _ = a.db.Exec("UPDATE sandbox_files SET content = ?, updated_at = ? WHERE sandbox_id = ? AND path = ?",
-					content, now, sandboxID, rel)
-			}
-		}
-		return nil
-	})
-
-	for dbPath := range dbFiles {
-		if !diskFiles[dbPath] {
-			a.deleteSandboxFileDisk(sandboxID, dbPath)
-			_, _ = a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path = ?", sandboxID, dbPath)
-			_, _ = a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path LIKE ?", sandboxID, dbPath+"/%")
-		}
-	}
-
-	return nil
 }
 
 func (a *App) GetSandboxFiles(sandboxID string) ([]SandboxFile, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
 	}
-
-	_ = a.syncSandboxFromDisk(sandboxID)
 
 	rows, err := a.db.Query("SELECT id, sandbox_id, path, content, is_dir, updated_at FROM sandbox_files WHERE sandbox_id = ?", sandboxID)
 	if err != nil {
@@ -260,35 +157,10 @@ func (a *App) GetSandboxFiles(sandboxID string) ([]SandboxFile, error) {
 		if err := rows.Scan(&f.ID, &f.SandboxID, &f.Path, &f.Content, &isDirInt, &f.UpdatedAt); err != nil {
 			return nil, err
 		}
-		f.IsDir = isDirInt == 1
+		f.IsDir = (isDirInt == 1)
 		files = append(files, f)
 	}
 	return files, nil
-}
-
-func (a *App) writeSandboxFileDisk(sandboxID string, path string, content string, isDir bool) {
-	cfg, err := a.getSandboxConfig(sandboxID)
-	if err != nil {
-		return
-	}
-	envDir := a.resolveEnvDir(cfg)
-	target := filepath.Join(envDir, path)
-	if isDir {
-		_ = os.MkdirAll(target, 0755)
-	} else {
-		_ = os.MkdirAll(filepath.Dir(target), 0755)
-		_ = os.WriteFile(target, []byte(content), 0644)
-	}
-}
-
-func (a *App) deleteSandboxFileDisk(sandboxID string, path string) {
-	cfg, err := a.getSandboxConfig(sandboxID)
-	if err != nil {
-		return
-	}
-	envDir := a.resolveEnvDir(cfg)
-	target := filepath.Join(envDir, path)
-	_ = os.RemoveAll(target)
 }
 
 func (a *App) SaveSandboxFile(sandboxID string, path string, content string, isDir bool) error {
@@ -302,29 +174,30 @@ func (a *App) SaveSandboxFile(sandboxID string, path string, content string, isD
 		isDirInt = 1
 	}
 
-	result, err := a.db.Exec(
-		"UPDATE sandbox_files SET content = ?, is_dir = ?, updated_at = ? WHERE sandbox_id = ? AND path = ?",
-		content, isDirInt, now, sandboxID, path,
+	_, err := a.db.Exec(`
+		INSERT INTO sandbox_files (id, sandbox_id, path, content, is_dir, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(sandbox_id, path) DO UPDATE SET content=excluded.content, is_dir=excluded.is_dir, updated_at=excluded.updated_at`,
+		fmt.Sprintf("%d", time.Now().UnixNano()), sandboxID, path, content, isDirInt, now,
 	)
-	if err != nil {
-		return err
-	}
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		id := fmt.Sprintf("%d", time.Now().UnixNano())
-		_, err = a.db.Exec(
-			"INSERT INTO sandbox_files (id, sandbox_id, path, content, is_dir, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, sandboxID, path, content, isDirInt, now,
-		)
-		if err != nil {
-			return err
+	// If this sandbox is active, sync immediately to disk
+	var workspaceID, activeSandboxID string
+	_ = a.db.QueryRow("SELECT workspace_id FROM sandboxes WHERE id = ?", sandboxID).Scan(&workspaceID)
+	_ = a.db.QueryRow("SELECT active_sandbox_id FROM workspaces WHERE id = ?", workspaceID).Scan(&activeSandboxID)
+
+	if sandboxID == activeSandboxID {
+		runtimeDir := a.GetWorkspaceRuntimePath(workspaceID)
+		target := filepath.Join(runtimeDir, path)
+		if isDir {
+			_ = os.MkdirAll(target, 0755)
+		} else {
+			_ = os.MkdirAll(filepath.Dir(target), 0755)
+			_ = os.WriteFile(target, []byte(content), 0644)
 		}
 	}
 
-	a.writeSandboxFileDisk(sandboxID, path, content, isDir)
-
-	return nil
+	return err
 }
 
 func (a *App) DeleteSandboxFile(sandboxID string, path string) error {
@@ -332,13 +205,52 @@ func (a *App) DeleteSandboxFile(sandboxID string, path string) error {
 		return errors.New("database not initialized")
 	}
 
-	a.deleteSandboxFileDisk(sandboxID, path)
+	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path = ?", sandboxID, path)
 
-	if _, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path = ?", sandboxID, path); err != nil {
-		return err
+	var workspaceID, activeSandboxID string
+	_ = a.db.QueryRow("SELECT workspace_id FROM sandboxes WHERE id = ?", sandboxID).Scan(&workspaceID)
+	_ = a.db.QueryRow("SELECT active_sandbox_id FROM workspaces WHERE id = ?", workspaceID).Scan(&activeSandboxID)
+
+	if sandboxID == activeSandboxID {
+		runtimeDir := a.GetWorkspaceRuntimePath(workspaceID)
+		_ = os.RemoveAll(filepath.Join(runtimeDir, path))
 	}
 
-	prefix := path + "/"
-	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path LIKE ?", sandboxID, prefix+"%")
 	return err
+}
+
+func (a *App) ExportSandbox(sandboxID string) (string, error) {
+	var s Sandbox
+	err := a.db.QueryRow("SELECT id, workspace_id, name, COALESCE(folder, ''), markdown_note, html_note, created_at, updated_at FROM sandboxes WHERE id = ?", sandboxID).
+		Scan(&s.ID, &s.WorkspaceID, &s.Name, &s.Folder, &s.MarkdownNote, &s.HTMLNote, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		return "", err
+	}
+
+	files, _ := a.GetSandboxFiles(sandboxID)
+	payload := SandboxExportData{
+		Sandbox: s,
+		Files:   files,
+	}
+
+	b, err := json.MarshalIndent(payload, "", "  ")
+	return string(b), err
+}
+
+func (a *App) ImportSandbox(workspaceID string, jsonContent string) (*Sandbox, error) {
+	var payload SandboxExportData
+	if err := json.Unmarshal([]byte(jsonContent), &payload); err != nil {
+		return nil, err
+	}
+
+	sb, err := a.CreateSandboxInFolder(workspaceID, payload.Sandbox.Name+" (Imported)", "python", payload.Sandbox.Folder)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, f := range payload.Files {
+		_ = a.SaveSandboxFile(sb.ID, f.Path, f.Content, f.IsDir)
+	}
+
+	return sb, nil
 }

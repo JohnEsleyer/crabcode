@@ -1,10 +1,31 @@
 package main
 
-// Declarative Infrastructure-as-Code Spec Structs
+// ButtonMappings maps CrabCode UI actions to terminal/shell commands
+type ButtonMappings struct {
+	Run   string `json:"run" yaml:"run"`
+	Build string `json:"build" yaml:"build"`
+	Test  string `json:"test" yaml:"test"`
+}
+
 type SetupStep struct {
 	Name    string `json:"name" yaml:"name"`
 	Command string `json:"command" yaml:"command"`
-	Dir     string `json:"dir" yaml:"dir"`
+}
+
+type DeclarativeConfig struct {
+	Name        string            `json:"name" yaml:"name"`
+	Version     string            `json:"version" yaml:"version"`
+	Environment string            `json:"environment" yaml:"environment"`
+	IconColor   string            `json:"iconColor" yaml:"icon_color"`
+	Setup       []SetupStep       `json:"setup" yaml:"setup"`
+	EnvVars     map[string]string `json:"envVars" yaml:"env_vars"`
+	Mappings    ButtonMappings    `json:"mappings" yaml:"mappings"`
+	Notes       NotesSpec         `json:"notes" yaml:"notes"`
+}
+
+type NotesSpec struct {
+	Markdown string `json:"markdown" yaml:"markdown"`
+	HTML     string `json:"html" yaml:"html"`
 }
 
 type TemplateFile struct {
@@ -13,59 +34,35 @@ type TemplateFile struct {
 	IsDir   bool   `json:"isDir" yaml:"is_dir"`
 }
 
-type BuildStep struct {
-	Name    string `json:"name" yaml:"name"`
-	Command string `json:"command" yaml:"command"`
-}
-
-type RunSpec struct {
-	Command string `json:"command" yaml:"command"`
-}
-
-type NotesSpec struct {
-	Markdown string `json:"markdown" yaml:"markdown"`
-	HTML     string `json:"html" yaml:"html"`
-}
-
-type DeclarativeConfig struct {
-	Name        string            `json:"name" yaml:"name"`
-	Version     string            `json:"version" yaml:"version"`
-	Environment string            `json:"environment" yaml:"environment"`
-	EnvDir      string            `json:"envDir" yaml:"env_dir"`
-	IconColor   string            `json:"iconColor" yaml:"icon_color"`
-	Setup       []SetupStep       `json:"setup" yaml:"setup"`
-	EnvVars     map[string]string `json:"envVars" yaml:"env_vars"`
-	Files       []TemplateFile    `json:"files" yaml:"files"`
-	Build       []BuildStep       `json:"build" yaml:"build"`
-	Run         RunSpec           `json:"run" yaml:"run"`
-	Notes       NotesSpec         `json:"notes" yaml:"notes"`
-}
-
 type TemplateSpec struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Environment string            `json:"environment"`
 	IconColor   string            `json:"iconColor"`
 	Config      DeclarativeConfig `json:"config"`
+	Files       []TemplateFile    `json:"files"`
 	RawYAML     string            `json:"rawYaml"`
 }
 
 type Workspace struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	ConfigYAML      string `json:"configYaml"`
+	RuntimePath     string `json:"runtimePath"`
+	ActiveSandboxID string `json:"activeSandboxId"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 type Sandbox struct {
 	ID           string `json:"id"`
 	WorkspaceID  string `json:"workspaceId"`
 	Name         string `json:"name"`
-	ConfigYAML   string `json:"configYaml"`
+	Folder       string `json:"folder"`
 	MarkdownNote string `json:"markdownNote"`
 	HTMLNote     string `json:"htmlNote"`
-	Folder       string `json:"folder"`
+	IsActive     bool   `json:"isActive"`
 	CreatedAt    string `json:"createdAt"`
 	UpdatedAt    string `json:"updatedAt"`
 }
@@ -84,7 +81,6 @@ type GlobalSettings struct {
 	UniversalEnvDir string `json:"universalEnvDir"`
 }
 
-// Backup / Export Payload Structures
 type SandboxExportData struct {
 	Sandbox Sandbox       `json:"sandbox"`
 	Files   []SandboxFile `json:"files"`

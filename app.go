@@ -13,7 +13,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// App struct
 type App struct {
 	ctx             context.Context
 	activeProcesses map[string]*exec.Cmd
@@ -23,7 +22,6 @@ type App struct {
 	cliPath         string
 }
 
-// NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
 		activeProcesses: make(map[string]*exec.Cmd),
@@ -31,15 +29,12 @@ func NewApp() *App {
 	}
 }
 
-// startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	_ = a.ensureGlobalDBInitialized()
-	_ = a.InitPlayground()
 	_ = a.InitTemplates()
 }
 
-// ensureGlobalDBInitialized ensures a single global SQLite database at <CrabRoot>/crabcode.db
 func (a *App) ensureGlobalDBInitialized() error {
 	root := a.GetCrabRootDirectory()
 	_ = os.MkdirAll(root, 0755)
@@ -58,7 +53,6 @@ func (a *App) ensureGlobalDBInitialized() error {
 	return a.migrate()
 }
 
-// CloseDB closes active DB session if loaded
 func (a *App) CloseDB() {
 	if a.db != nil {
 		_ = a.db.Close()
@@ -76,14 +70,18 @@ func (a *App) migrate() error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			config_yaml TEXT NOT NULL DEFAULT '',
+			active_sandbox_id TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS sandboxes (
 			id TEXT PRIMARY KEY,
-			workspace_id TEXT NOT NULL DEFAULT 'default',
+			workspace_id TEXT NOT NULL,
 			name TEXT NOT NULL,
-			config_yaml TEXT NOT NULL,
+			folder TEXT NOT NULL DEFAULT '',
+			markdown_note TEXT NOT NULL DEFAULT '',
+			html_note TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -106,16 +104,24 @@ func (a *App) migrate() error {
 		}
 	}
 
-	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'")
-	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN markdown_note TEXT NOT NULL DEFAULT ''")
-	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN html_note TEXT NOT NULL DEFAULT ''")
-	_, _ = a.db.Exec("ALTER TABLE sandboxes ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
-
-	// Ensure default workspace exists
+	// Default Workspace Bootstrap
 	var count int
 	_ = a.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE id = 'default'").Scan(&count)
 	if count == 0 {
-		_, _ = a.db.Exec("INSERT INTO workspaces (id, name, description, created_at, updated_at) VALUES ('default', 'Default Lab', 'Main experimentation lab workspace', DATETIME('now'), DATETIME('now'))")
+		defaultConfig := `name: "Default Lab Workspace"
+version: "1.0"
+environment: "python"
+setup: []
+mappings:
+  run: "python3 main.py"
+  test: "pytest"
+env_vars:
+  PYTHONUNBUFFERED: "1"
+`
+		_, _ = a.db.Exec(
+			"INSERT INTO workspaces (id, name, description, config_yaml, active_sandbox_id, created_at, updated_at) VALUES ('default', 'Default Lab Workspace', 'Primary experimentation workspace', ?, '', DATETIME('now'), DATETIME('now'))",
+			defaultConfig,
+		)
 	}
 
 	return nil
