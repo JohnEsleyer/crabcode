@@ -71,7 +71,10 @@
   let activeWorkspaceId = $state('default');
   let activeWorkspaceObj = $derived(workspacesList.find(w => w.id === activeWorkspaceId) || null);
 
+  // Sidebar Expandable / Resizable state
   let showSidebar = $state(true);
+  let sidebarWidth = $state(260);
+  let isSidebarResizing = $state(false);
 
   // Sandboxes State
   let sandboxesList = $state([]);
@@ -84,7 +87,6 @@
 
   let activeFileNotes = $state([]);
   let editingNoteIds = $state({});
-  let activeFileNoteDrafts = $state({});
 
   let isActivatingSandbox = $state(false);
 
@@ -237,7 +239,16 @@ env_vars:
   function buildSandboxExtensions(fileName) {
     return [
       basicSetup,
-      keymap.of([indentWithTab]),
+      keymap.of([
+        indentWithTab,
+        {
+          key: 'Mod-s',
+          run: () => {
+            handleSaveSandbox();
+            return true;
+          }
+        }
+      ]),
       crabCodeTheme,
       syntaxHighlighting(crabHighlightStyle),
       sandboxLanguageConf.of(getLanguageExtension(fileName)),
@@ -273,6 +284,33 @@ env_vars:
       sandboxView = null;
     }
   });
+
+  function startSidebarResize(e) {
+    isSidebarResizing = true;
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    function onMouseMove(event) {
+      const deltaX = event.clientX - startX;
+      sidebarWidth = Math.max(180, Math.min(500, startWidth + deltaX));
+    }
+
+    function onMouseUp() {
+      isSidebarResizing = false;
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }
+
+  function handleGlobalKeydown(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      handleSaveSandbox();
+    }
+  }
 
   let toastId = 0;
   function addToast(message, type = 'info', duration = 2500) {
@@ -392,7 +430,6 @@ env_vars:
     lastSavedSandboxHTMLNote = '';
     activeFileNotes = [];
     editingNoteIds = {};
-    activeFileNoteDrafts = {};
   }
 
   async function refreshSandboxFiles() {
@@ -429,33 +466,23 @@ env_vars:
     }
     try {
       activeFileNotes = await GetFileNotes(activeSandboxId, activeSandboxFilePath);
-    } catch (err) {
-      logSystem('Failed to load file notes: ' + String(err), 'error');
-    }
-  }
-
-  function toggleNoteEditing(id) {
-    if (editingNoteIds[id]) {
-      editingNoteIds = { ...editingNoteIds, [id]: false };
-      activeFileNoteDrafts[id] = undefined;
-    } else {
-      const note = activeFileNotes.find(n => n.id === id);
-      activeFileNoteDrafts[id] = note ? note.content : '';
-      editingNoteIds = { ...editingNoteIds, [id]: true };
+    } catch (_) {
+      activeFileNotes = [];
     }
   }
 
   async function handleAddFileNote() {
-    if (!activeSandboxId || !activeSandboxFilePath) {
-      addToast('Select a file to add notes', 'error');
-      return;
-    }
-    const title = await openPrompt('New Note Title', 'Observations');
-    if (!title) return;
+    if (!activeSandboxId || !activeSandboxFilePath) return;
     try {
-      await AddFileNote(activeSandboxId, activeSandboxFilePath, title.trim() || 'Observations', `# ${title.trim()}\n\nStart writing your observations...`);
+      const newNote = await AddFileNote(
+        activeSandboxId,
+        activeSandboxFilePath,
+        `Note Entry #${activeFileNotes.length + 1}`,
+        `# Notes for ${activeSandboxFileName}\n\nWrite observations here...`
+      );
+      editingNoteIds[newNote.id] = true;
       await refreshActiveFileNotes();
-      addToast('Note added', 'success');
+      addToast('Note appended', 'success');
     } catch (err) {
       logSystem('Failed to add note: ' + String(err), 'error');
     }
@@ -463,18 +490,17 @@ env_vars:
 
   async function handleSaveFileNote(note) {
     try {
-      await UpdateFileNote(note.id, note.title, activeFileNoteDrafts[note.id] ?? '');
-      editingNoteIds = { ...editingNoteIds, [note.id]: false };
-      activeFileNoteDrafts[note.id] = undefined;
+      await UpdateFileNote(note.id, note.title, note.content);
+      editingNoteIds[note.id] = false;
       await refreshActiveFileNotes();
       addToast('Note saved', 'success');
     } catch (err) {
-      logSystem('Failed to save note: ' + String(err), 'error');
+      logSystem('Failed to update note: ' + String(err), 'error');
     }
   }
 
   async function handleDeleteFileNote(noteId) {
-    if (!confirm('Delete this note?')) return;
+    if (!confirm('Delete this markdown note entry?')) return;
     try {
       await DeleteFileNote(noteId);
       await refreshActiveFileNotes();
@@ -850,6 +876,8 @@ env_vars:
   }
 
   onMount(async () => {
+    window.addEventListener('keydown', handleGlobalKeydown);
+
     try {
       const settings = await GetGlobalSettings();
       settingsCrabRootPath = settings.crabRootPath;
@@ -888,6 +916,7 @@ env_vars:
   });
 
   onDestroy(() => {
+    window.removeEventListener('keydown', handleGlobalKeydown);
     if (sandboxView) sandboxView.destroy();
   });
 </script>
@@ -1068,9 +1097,18 @@ env_vars:
 
   <div class="app-body">
     {#if activeTab === 'lab'}
-      <!-- Left Sidebar: Sandboxes Explorer -->
+      <!-- Resizable & Expandable Left Sidebar -->
       {#if showSidebar}
-        <aside class="sidebar">
+        <aside class="sidebar" style="width: {sidebarWidth}px; min-width: {sidebarWidth}px; max-width: {sidebarWidth}px;">
+          <div
+            class="sidebar-resize-handle"
+            onmousedown={startSidebarResize}
+            class:resizing={isSidebarResizing}
+            title="Drag to resize sidebar"
+            role="separator"
+            tabindex="0"
+          ></div>
+
           <div class="sidebar-header-row">
             <span class="sidebar-title">Experiments ({sandboxesList.length})</span>
             <div class="sidebar-actions">
@@ -1151,8 +1189,12 @@ env_vars:
                 <button class="action-btn" onclick={() => showSandboxSplit = !showSandboxSplit}>
                   <Columns size={13} /> {showSandboxSplit ? 'Hide Split' : 'Show Split'}
                 </button>
-                <button class="action-btn" onclick={handleSaveSandbox} disabled={!activeSandboxUnsaved}>
-                  <Save size={13} /> Save Lab
+                <button class="action-btn" class:has-unsaved={activeSandboxUnsaved} onclick={handleSaveSandbox} title="Save (Ctrl+S / Cmd+S)">
+                  <Save size={13} />
+                  <span>Save Lab</span>
+                  {#if activeSandboxUnsaved}
+                    <span class="unsaved-dot-inline" title="Unsaved changes">●</span>
+                  {/if}
                 </button>
                 {#if !isRunning}
                   <button class="action-btn run" onclick={runActiveCode}><Play size={13} fill="#48bb78" stroke="none" /> Run Experiment</button>
@@ -1181,10 +1223,14 @@ env_vars:
                     </div>
                     <div class="v-files-list">
                       {#each sandboxFilesList as vFile (vFile.path)}
+                        {@const isUnsaved = (vFile.path === activeSandboxFilePath && activeSandboxFileUnsaved)}
                         <div class="v-file-row" class:active={activeSandboxFilePath === vFile.path}>
                           <button class="v-file-btn" onclick={() => selectSandboxFile(vFile)}>
                             <FileCode size={12} />
                             <span class="v-file-name">{vFile.path}</span>
+                            {#if isUnsaved}
+                              <span class="unsaved-dot" title="Unsaved changes">●</span>
+                            {/if}
                           </button>
                           <button class="v-file-delete" onclick={() => handleDeleteSandboxFile(vFile.path)}><Trash2 size={10} /></button>
                         </div>
@@ -1206,70 +1252,77 @@ env_vars:
               {#if showSandboxSplit}
                 <div class="sandbox-notes-pane">
                   <div class="notes-tab-bar">
-                    <button class="notes-tab" class:active={sandboxSplitType === 'markdown'} onclick={() => sandboxSplitType = 'markdown'}><BookOpen size={12} /> Notes</button>
-                    <button class="notes-tab" class:active={sandboxSplitType === 'html'} onclick={() => sandboxSplitType = 'html'}><Sparkles size={12} /> Live Canvas</button>
-                    <button class="notes-tab" class:active={sandboxSplitType === 'yaml'} onclick={() => sandboxSplitType = 'yaml'}><Settings size={12} /> Workspace YAML</button>
+                    <button class="notes-tab" class:active={sandboxSplitType === 'markdown'} onclick={() => sandboxSplitType = 'markdown'}>
+                      <BookOpen size={12} /> Markdown Notes ({activeFileNotes.length})
+                    </button>
+                    <button class="notes-tab" class:active={sandboxSplitType === 'html'} onclick={() => sandboxSplitType = 'html'}>
+                      <Sparkles size={12} /> Live Canvas
+                    </button>
+                    <button class="notes-tab" class:active={sandboxSplitType === 'yaml'} onclick={() => sandboxSplitType = 'yaml'}>
+                      <Settings size={12} /> Workspace YAML
+                    </button>
                   </div>
 
                   <div class="notes-pane-content">
                     {#if sandboxSplitType === 'markdown'}
                       <div class="split-pane">
                         <div class="pane-action-header">
-                          <span class="pane-title">MARKDOWN NOTES {#if activeFileNotes.length > 0}<span class="notes-count-badge">{activeFileNotes.length}</span>{/if}</span>
-                          <button class="edit-toggle-btn" onclick={handleAddFileNote}>
-                            <Plus size={11} /> Add Note
+                          <span class="pane-title">NOTES FOR {activeSandboxFileName || 'FILE'} (FIFO ORDER)</span>
+                          <button class="edit-toggle-btn primary" onclick={handleAddFileNote} disabled={!activeSandboxFilePath}>
+                            <Plus size={11} /> Add Note Entry
                           </button>
                         </div>
-                        {#if activeSandboxFilePath}
-                          <div class="file-notes-list">
-                            {#each activeFileNotes as note, i (note.id)}
-                              <div class="file-note-card">
-                                <div class="file-note-header">
-                                  <span class="file-note-index">#{i + 1}</span>
-                                  <span class="file-note-title">{note.title}</span>
-                                  <span class="file-note-time">{note.createdAt ? new Date(note.createdAt).toLocaleString() : ''}</span>
-                                  <div class="file-note-actions">
-                                    {#if editingNoteIds[note.id]}
-                                      <button class="note-action-btn" onclick={() => handleSaveFileNote(note)} title="Save"><Save size={11} /></button>
-                                    {/if}
-                                    <button class="note-action-btn" onclick={() => toggleNoteEditing(note.id)}>
-                                      {#if editingNoteIds[note.id]}<Eye size={11} /> View{:else}<Edit3 size={11} /> Edit{/if}
-                                    </button>
-                                    <button class="note-action-btn danger" onclick={() => handleDeleteFileNote(note.id)} title="Delete"><Trash2 size={11} /></button>
-                                  </div>
+
+                        <div class="fifo-notes-scroll">
+                          {#if activeFileNotes.length === 0}
+                            <div class="empty-notes-hint">
+                              <FileText size={20} />
+                              <span>No markdown notes for <strong>{activeSandboxFileName || 'this file'}</strong> yet.</span>
+                              <button class="modal-btn secondary" onclick={handleAddFileNote} disabled={!activeSandboxFilePath}>
+                                <Plus size={12} /> Add First Markdown Note
+                              </button>
+                            </div>
+                          {/if}
+
+                          {#each activeFileNotes as note, index (note.id)}
+                            <div class="file-note-card">
+                              <div class="note-card-header">
+                                <span class="note-index-badge">#{index + 1}</span>
+                                <span class="note-title-display">{note.title || 'Note Entry'}</span>
+                                <div class="note-header-actions">
+                                  <button class="edit-toggle-btn" onclick={() => editingNoteIds[note.id] = !editingNoteIds[note.id]}>
+                                    {#if editingNoteIds[note.id]}<Eye size={11} /> View{:else}<Edit3 size={11} /> Edit{/if}
+                                  </button>
+                                  <button class="icon-btn danger" onclick={() => handleDeleteFileNote(note.id)}><Trash2 size={11} /></button>
                                 </div>
-                                {#if editingNoteIds[note.id]}
-                                  <textarea class="raw-textarea" bind:value={activeFileNoteDrafts[note.id]} placeholder="Write markdown observations..."></textarea>
-                                {:else}
-                                  <div class="markdown-preview">
-                                    {#each note.content.split('\n') as line}
-                                      {@const part = renderMarkdownLine(line)}
-                                      {#if part.type === 'h1'}<h1>{part.text}</h1>
-                                      {:else if part.type === 'h2'}<h2>{part.text}</h2>
-                                      {:else if part.type === 'h3'}<h3>{part.text}</h3>
-                                      {:else if part.type === 'quote'}<blockquote>{part.text}</blockquote>
-                                      {:else if part.type === 'li'}<li>{part.text}</li>
-                                      {:else if part.type === 'codeblock'}<pre class="codeblock"><code>{part.text}</code></pre>
-                                      {:else if part.type === 'br'}<br />
-                                      {:else}<p>{part.text}</p>{/if}
-                                    {/each}
-                                  </div>
-                                {/if}
                               </div>
-                            {/each}
-                            {#if activeFileNotes.length === 0}
-                              <div class="empty-notes-hint">
-                                <FileText size={16} />
-                                <span>No notes yet for <strong>{activeSandboxFileName}</strong>. Add one to track your observations.</span>
-                              </div>
-                            {/if}
-                          </div>
-                        {:else}
-                          <div class="empty-notes-hint">
-                            <FileText size={16} />
-                            <span>Select a file to view or write its markdown notes.</span>
-                          </div>
-                        {/if}
+
+                              {#if editingNoteIds[note.id]}
+                                <div class="note-edit-box">
+                                  <input type="text" class="modal-input note-title-input" bind:value={note.title} placeholder="Note Title" />
+                                  <textarea class="raw-textarea note-textarea" bind:value={note.content} placeholder="Markdown notes..."></textarea>
+                                  <button class="modal-btn primary mini-btn" onclick={() => handleSaveFileNote(note)}>
+                                    <Save size={11} /> Save Note Entry
+                                  </button>
+                                </div>
+                              {:else}
+                                <div class="markdown-preview">
+                                  {#each note.content.split('\n') as line}
+                                    {@const part = renderMarkdownLine(line)}
+                                    {#if part.type === 'h1'}<h1>{part.text}</h1>
+                                    {:else if part.type === 'h2'}<h2>{part.text}</h2>
+                                    {:else if part.type === 'h3'}<h3>{part.text}</h3>
+                                    {:else if part.type === 'quote'}<blockquote>{part.text}</blockquote>
+                                    {:else if part.type === 'li'}<li>{part.text}</li>
+                                    {:else if part.type === 'codeblock'}<pre class="codeblock"><code>{part.text}</code></pre>
+                                    {:else if part.type === 'br'}<br />
+                                    {:else}<p>{part.text}</p>{/if}
+                                  {/each}
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
                       </div>
 
                     {:else if sandboxSplitType === 'html'}
@@ -1547,8 +1600,9 @@ env_vars:
     height: calc(100vh - 44px);
   }
 
-  /* Sidebar */
+  /* Expandable / Resizable Sidebar */
   .sidebar {
+    position: relative;
     width: 260px;
     min-width: 260px;
     max-width: 260px;
@@ -1558,6 +1612,21 @@ env_vars:
     flex-direction: column;
     height: 100%;
     box-sizing: border-box;
+    transition: width 0.05s ease-out;
+  }
+
+  .sidebar-resize-handle {
+    position: absolute;
+    top: 0; right: -3px; bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    z-index: 100;
+    background: transparent;
+  }
+
+  .sidebar-resize-handle:hover,
+  .sidebar-resize-handle.resizing {
+    background-color: #ff5a36aa;
   }
 
   .sidebar-header-row {
@@ -1789,9 +1858,25 @@ env_vars:
   }
 
   .action-btn:hover { color: #edf2f7; border-color: #4a5568; }
+  .action-btn.has-unsaved { border-color: #ff5a36aa; color: #edf2f7; }
   .action-btn.run { background-color: #48bb7822; color: #48bb78; border-color: #48bb7844; }
   .action-btn.run:hover { background-color: #48bb7833; }
   .action-btn.stop { background-color: #ff5a3622; color: #ff5a36; border-color: #ff5a3644; }
+
+  /* Unsaved Dot Indicator */
+  .unsaved-dot {
+    color: #ff5a36;
+    font-size: 10px;
+    margin-left: auto;
+    filter: drop-shadow(0 0 3px #ff5a3688);
+  }
+
+  .unsaved-dot-inline {
+    color: #ff5a36;
+    font-size: 10px;
+    margin-left: 2px;
+    filter: drop-shadow(0 0 3px #ff5a3688);
+  }
 
   /* Split area */
   .sandbox-working-split {
@@ -1982,6 +2067,13 @@ env_vars:
     gap: 4px;
   }
 
+  .edit-toggle-btn.primary {
+    color: #ff5a36;
+    font-weight: 600;
+  }
+
+  .edit-toggle-btn:hover { color: #edf2f7; }
+
   .raw-textarea {
     flex: 1;
     width: 100%;
@@ -2009,134 +2101,101 @@ env_vars:
   }
 
   .markdown-preview {
-    flex: 1;
-    padding: 14px;
-    overflow-y: auto;
-    font-size: 13px;
+    padding: 12px;
+    font-size: 12px;
     line-height: 1.6;
     color: #cbd5e0;
   }
 
-  .markdown-preview h1 { font-size: 18px; color: #edf2f7; border-bottom: 1px solid #2d3748; padding-bottom: 4px; margin-top: 0; }
-  .markdown-preview h2 { font-size: 15px; color: #edf2f7; margin-top: 12px; }
-  .markdown-preview h3 { font-size: 13px; color: #ff5a36; margin-top: 10px; }
+  .markdown-preview h1 { font-size: 16px; color: #edf2f7; border-bottom: 1px solid #2d3748; padding-bottom: 4px; margin-top: 0; }
+  .markdown-preview h2 { font-size: 14px; color: #edf2f7; margin-top: 12px; }
+  .markdown-preview h3 { font-size: 12px; color: #ff5a36; margin-top: 10px; }
   .markdown-preview blockquote { border-left: 3px solid #ff5a36; margin: 8px 0; padding-left: 10px; color: #a0aec0; }
   .markdown-preview .codeblock { background: #07070a; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; color: #34d399; }
 
-  .notes-count-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 8px;
-    background-color: #ff5a36;
-    color: #0b0b0f;
-    font-size: 9px;
-    font-weight: 700;
-    margin-left: 4px;
-  }
-
-  .file-notes-list {
+  .fifo-notes-scroll {
     flex: 1;
     overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
     padding: 12px;
-  }
-
-  .file-note-card {
-    background-color: #10101a;
-    border: 1px solid #1f1f2c;
-    border-radius: 6px;
-    overflow: hidden;
     display: flex;
     flex-direction: column;
-  }
-
-  .file-note-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    background-color: #0a0a0f;
-    border-bottom: 1px solid #1a1a24;
-  }
-
-  .file-note-index {
-    font-size: 10px;
-    font-weight: 700;
-    color: #ff5a36;
-    background-color: #ff5a3618;
-    border-radius: 4px;
-    padding: 2px 6px;
-    flex-shrink: 0;
-  }
-
-  .file-note-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #edf2f7;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .file-note-time {
-    font-size: 9px;
-    color: #6b7280;
-    white-space: nowrap;
-    margin-left: auto;
-    flex-shrink: 0;
-  }
-
-  .file-note-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .note-action-btn {
-    background: none;
-    border: none;
-    color: #a0aec0;
-    font-size: 10px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    padding: 2px 4px;
-    border-radius: 3px;
-  }
-
-  .note-action-btn:hover { background-color: #1f1f2c; color: #edf2f7; }
-  .note-action-btn.danger:hover { color: #fc8181; }
-
-  .file-note-card .markdown-preview {
-    flex: none;
-    padding: 10px 12px;
-    max-height: 260px;
-  }
-
-  .file-note-card .raw-textarea {
-    flex: none;
-    min-height: 140px;
+    gap: 12px;
   }
 
   .empty-notes-hint {
-    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    padding: 40px 20px;
     color: #6b7280;
     font-size: 12px;
+    gap: 10px;
     text-align: center;
-    padding: 20px;
+  }
+
+  .file-note-card {
+    background-color: #08080d;
+    border: 1px solid #1a1a24;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .note-card-header {
+    height: 28px;
+    background-color: #0f0f18;
+    border-bottom: 1px solid #1a1a24;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .note-index-badge {
+    font-size: 10px;
+    font-weight: 800;
+    color: #ff5a36;
+    background-color: #ff5a3618;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .note-title-display {
+    font-size: 11px;
+    font-weight: 700;
+    color: #edf2f7;
+    flex: 1;
+    margin-left: 8px;
+  }
+
+  .note-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .note-edit-box {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .note-title-input {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+
+  .note-textarea {
+    height: 120px;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+  }
+
+  .mini-btn {
+    align-self: flex-end;
+    padding: 4px 8px;
+    font-size: 11px;
   }
 
   .html-frame-wrapper {
