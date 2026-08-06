@@ -42,7 +42,7 @@
     Play, Square, Settings, Database, BookOpen, Plus, Trash2, Columns,
     PanelLeft, Save, Sparkles, FileCode, Eye, Edit3, Folder,
     FolderPlus, Download, Upload, FlaskConical, Archive, AlertTriangle, RefreshCw, CheckCircle2,
-    Loader2, Cpu, FileText
+    Loader2, Cpu, FileText, ChevronDown
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -66,10 +66,11 @@
 
   let activeTab = $state('lab'); // 'lab', 'workspaces', 'settings'
 
-  // Workspace DB State
+  // Workspace DB State & Dropdown UI State
   let workspacesList = $state([]);
   let activeWorkspaceId = $state('default');
   let activeWorkspaceObj = $derived(workspacesList.find(w => w.id === activeWorkspaceId) || null);
+  let isWsDropdownOpen = $state(false);
 
   // Sidebar Expandable / Resizable state
   let showSidebar = $state(true);
@@ -309,6 +310,12 @@ env_vars:
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       handleSaveSandbox();
+    }
+  }
+
+  function handleWindowClick(e) {
+    if (isWsDropdownOpen && !e.target.closest('.workspace-dropdown-wrapper')) {
+      isWsDropdownOpen = false;
     }
   }
 
@@ -877,6 +884,7 @@ env_vars:
 
   onMount(async () => {
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('click', handleWindowClick);
 
     try {
       const settings = await GetGlobalSettings();
@@ -917,6 +925,7 @@ env_vars:
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleGlobalKeydown);
+    window.removeEventListener('click', handleWindowClick);
     if (sandboxView) sandboxView.destroy();
   });
 </script>
@@ -1073,18 +1082,49 @@ env_vars:
 {/if}
 
 <div class="app-shell">
-  <!-- Top Navigation Header -->
+  <!-- Top Navigation Header with Custom Workspace Dropdown -->
   <header class="top-header">
     <div class="top-header-left">
       <div class="logo-badge"><FlaskConical size={16} /> <span>CrabCode Lab</span></div>
-      <div class="workspace-pill">
-        <span class="ws-pill-label">WORKSPACE:</span>
-        <select class="ws-dropdown" value={activeWorkspaceId} onchange={(e) => switchWorkspace(e.target.value)}>
-          {#each workspacesList as ws}
-            <option value={ws.id}>{ws.name}</option>
-          {/each}
-        </select>
-        <button class="ws-add-btn" onclick={openCreateWorkspaceModal} title="New Workspace Container"><Plus size={12} /></button>
+
+      <!-- Custom Dark Workspace Dropdown -->
+      <div class="workspace-dropdown-wrapper">
+        <button class="workspace-pill-btn" onclick={() => isWsDropdownOpen = !isWsDropdownOpen}>
+          <span class="ws-pill-label">WORKSPACE:</span>
+          <span class="ws-pill-name">{activeWorkspaceObj?.name || 'Select Workspace'}</span>
+          <ChevronDown size={12} class="ws-chevron {isWsDropdownOpen ? 'open' : ''}" />
+        </button>
+
+        {#if isWsDropdownOpen}
+          <div class="workspace-dropdown-menu" onclick={(e) => e.stopPropagation()} role="menu" tabindex="-1">
+            <div class="ws-menu-header">
+              <span>WORKSPACES ({workspacesList.length})</span>
+              <button class="icon-btn primary" onclick={() => { isWsDropdownOpen = false; openCreateWorkspaceModal(); }} title="Create Workspace">
+                <Plus size={12} />
+              </button>
+            </div>
+
+            <div class="ws-menu-list">
+              {#each workspacesList as ws}
+                <button
+                  class="ws-menu-item"
+                  class:active={ws.id === activeWorkspaceId}
+                  onclick={() => { switchWorkspace(ws.id); isWsDropdownOpen = false; }}
+                >
+                  <div class="ws-item-left">
+                    <span class="ws-item-name">{ws.name}</span>
+                    {#if ws.description}
+                      <span class="ws-item-desc">{ws.description}</span>
+                    {/if}
+                  </div>
+                  {#if ws.id === activeWorkspaceId}
+                    <CheckCircle2 size={12} class="ws-active-check" />
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
     </div>
 
@@ -1524,43 +1564,145 @@ env_vars:
     font-size: 14px;
   }
 
-  .workspace-pill {
+  /* Custom Workspace Popover Dropdown */
+  .workspace-dropdown-wrapper {
+    position: relative;
+    user-select: none;
+  }
+
+  .workspace-pill-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     background: #12121a;
-    padding: 2px 8px;
+    padding: 4px 10px;
     border-radius: 6px;
     border: 1px solid #2d3748;
+    color: #edf2f7;
+    cursor: pointer;
+    font-size: 12px;
+    transition: border-color 0.15s, background-color 0.15s;
+  }
+
+  .workspace-pill-btn:hover {
+    border-color: #ff5a3688;
+    background-color: #1a1a26;
   }
 
   .ws-pill-label {
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 800;
     color: #6b7280;
+    letter-spacing: 0.5px;
   }
 
-  .ws-dropdown {
-    background: transparent;
-    border: none;
-    color: #edf2f7;
-    font-size: 12px;
+  .ws-pill-name {
     font-weight: 600;
-    outline: none;
-    cursor: pointer;
+    color: #edf2f7;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .ws-add-btn {
+  :global(.ws-chevron) {
+    color: #718096;
+    transition: transform 0.2s;
+  }
+
+  :global(.ws-chevron.open) {
+    transform: rotate(180deg);
+  }
+
+  .workspace-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: 280px;
+    background-color: #0f0f18;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px #000000aa;
+    z-index: 1000;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ws-menu-header {
+    height: 30px;
+    padding: 0 10px;
+    background-color: #09090e;
+    border-bottom: 1px solid #1a1a24;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10px;
+    font-weight: 800;
+    color: #6b7280;
+    letter-spacing: 0.5px;
+  }
+
+  .ws-menu-list {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .ws-menu-item {
     background: none;
     border: none;
-    color: #a0aec0;
+    padding: 8px 10px;
+    border-radius: 4px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    padding: 2px;
+    justify-content: space-between;
+    text-align: left;
+    color: #a0aec0;
+    transition: background-color 0.1s, color 0.1s;
   }
 
-  .ws-add-btn:hover { color: #ff5a36; }
+  .ws-menu-item:hover {
+    background-color: #1a1a26;
+    color: #edf2f7;
+  }
+
+  .ws-menu-item.active {
+    background-color: #ff5a3618;
+    color: #ff5a36;
+  }
+
+  .ws-item-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .ws-item-name {
+    font-size: 12px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ws-item-desc {
+    font-size: 10px;
+    color: #6b7280;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global(.ws-active-check) {
+    color: #48bb78;
+    flex-shrink: 0;
+  }
 
   .top-tabs {
     display: flex;
