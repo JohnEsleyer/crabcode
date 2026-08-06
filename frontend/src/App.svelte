@@ -17,6 +17,10 @@
     GetSandboxFiles,
     SaveSandboxFile,
     DeleteSandboxFile,
+    GetFileNotes,
+    AddFileNote,
+    UpdateFileNote,
+    DeleteFileNote,
     SaveSandboxNotes,
     GetWorkspaceRuntimePath,
     ActivateSandbox,
@@ -37,7 +41,8 @@
   import {
     Play, Square, Settings, Database, BookOpen, Plus, Trash2, Columns,
     PanelLeft, Save, Sparkles, FileCode, Eye, Edit3, Folder,
-    FolderPlus, Download, Upload, FlaskConical, Archive, AlertTriangle, RefreshCw, CheckCircle2
+    FolderPlus, Download, Upload, FlaskConical, Archive, AlertTriangle, RefreshCw, CheckCircle2,
+    Loader2, Cpu, FileText
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -74,10 +79,14 @@
   let activeSandboxName = $state('');
   let activeSandboxConfig = $state('');
   let lastSavedSandboxConfig = $state('');
-  let activeSandboxMarkdownNote = $state('');
   let activeSandboxHTMLNote = $state('');
-  let lastSavedSandboxMarkdownNote = $state('');
   let lastSavedSandboxHTMLNote = $state('');
+
+  let activeFileNotes = $state([]);
+  let editingNoteIds = $state({});
+  let activeFileNoteDrafts = $state({});
+
+  let isActivatingSandbox = $state(false);
 
   // Virtual Folders & Files State
   let sandboxSearchQuery = $state('');
@@ -87,7 +96,6 @@
   let showSandboxExplorer = $state(true);
   let showSandboxSplit = $state(true);
   let sandboxSplitType = $state('markdown'); // 'markdown', 'html', 'yaml'
-  let isSandboxMarkdownEditing = $state(false);
   let isSandboxHTMLEditing = $state(false);
 
   let sandboxFilesList = $state([]);
@@ -99,7 +107,7 @@
   let settingsCrabRootPath = $state('');
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
-
+  
   // Workspace Creation Modal State
   let showCreateWorkspaceModal = $state(false);
   let wsConfigMode = $state('template'); // 'template' or 'custom'
@@ -123,9 +131,11 @@ env_vars:
   let newSandboxName = $state('');
   let selectedSandboxFolder = $state('');
 
+  // Environment Initialization Indicator & Modal State
   let showInitEnvModal = $state(false);
   let isInitializingEnv = $state(false);
   let isEnvInitialized = $state(true);
+  let setupLogs = $state([]);
 
   let showResetConfirmModal = $state(false);
   let isResetting = $state(false);
@@ -146,6 +156,7 @@ env_vars:
 
   let bottomMode = $state('console');
   let consoleLogs = $state([]);
+  let systemLogs = $state([]);
   let consoleStatus = $state('Ready');
   let isConsoleRunning = $state(false);
   let activeRunnerId = $state('');
@@ -159,10 +170,7 @@ env_vars:
     activeSandboxId !== '' && activeSandboxConfig !== lastSavedSandboxConfig
   );
   let activeSandboxNotesUnsaved = $derived(
-    activeSandboxId !== '' && (
-      activeSandboxMarkdownNote !== lastSavedSandboxMarkdownNote ||
-      activeSandboxHTMLNote !== lastSavedSandboxHTMLNote
-    )
+    activeSandboxId !== '' && activeSandboxHTMLNote !== lastSavedSandboxHTMLNote
   );
   let activeSandboxUnsaved = $derived(
     activeSandboxFileUnsaved || activeSandboxConfigUnsaved || activeSandboxNotesUnsaved
@@ -267,10 +275,14 @@ env_vars:
   });
 
   let toastId = 0;
-  function addToast(message, type = 'info', duration = 3000) {
+  function addToast(message, type = 'info', duration = 2500) {
     const id = toastId++;
     toasts = [...toasts, { id, message, type }];
     setTimeout(() => { toasts = toasts.filter(item => item.id !== id); }, duration);
+  }
+
+  function logSystem(text, type = 'info') {
+    systemLogs = [...systemLogs, { time: Date.now(), text, type }];
   }
 
   function openPrompt(title, placeholder, defaultValue = '') {
@@ -291,7 +303,7 @@ env_vars:
       }
       await loadSandboxesForWorkspace(activeWorkspaceId);
     } catch (err) {
-      addToast('Failed to load workspaces: ' + String(err), 'error');
+      logSystem('Failed to load workspaces: ' + String(err), 'error');
     }
   }
 
@@ -308,14 +320,14 @@ env_vars:
         clearActiveSandbox();
       }
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem(String(err), 'error');
     }
   }
 
   async function switchWorkspace(wsId) {
     if (activeWorkspaceId === wsId) return;
     activeWorkspaceId = wsId;
-    addToast('Switched workspace runtime', 'info');
+    logSystem(`Switched active workspace runtime to '${wsId}'`, 'info');
     await loadSandboxesForWorkspace(wsId);
   }
 
@@ -329,7 +341,7 @@ env_vars:
         selectedWsTemplate = availableTemplates[0].id;
       }
     } catch (err) {
-      addToast('Failed to load environment templates: ' + String(err), 'error');
+      logSystem('Failed to load templates: ' + String(err), 'error');
     }
     showCreateWorkspaceModal = true;
   }
@@ -344,9 +356,9 @@ env_vars:
       showCreateWorkspaceModal = false;
       workspacesList = [ws, ...workspacesList];
       await switchWorkspace(ws.id);
-      addToast('Workspace created with environment config', 'success');
+      addToast('Workspace created', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Workspace creation failed: ' + String(err), 'error');
     }
   }
 
@@ -362,7 +374,7 @@ env_vars:
       addToast('Workspace deleted', 'success');
       await switchWorkspace('default');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Delete workspace error: ' + String(err), 'error');
     }
   }
 
@@ -376,10 +388,11 @@ env_vars:
     activeSandboxFileName = '';
     activeSandboxFileContent = '';
     lastSavedSandboxFileContent = '';
-    activeSandboxMarkdownNote = '';
     activeSandboxHTMLNote = '';
-    lastSavedSandboxMarkdownNote = '';
     lastSavedSandboxHTMLNote = '';
+    activeFileNotes = [];
+    editingNoteIds = {};
+    activeFileNoteDrafts = {};
   }
 
   async function refreshSandboxFiles() {
@@ -394,6 +407,7 @@ env_vars:
           activeSandboxFileName = '';
           activeSandboxFileContent = '';
           lastSavedSandboxFileContent = '';
+          activeFileNotes = [];
         }
       }
       if (!activeSandboxFilePath && sandboxFilesList.length > 0) {
@@ -404,7 +418,70 @@ env_vars:
         lastSavedSandboxFileContent = firstFile.content;
         updateSandboxEditor(firstFile.content, activeSandboxFileName);
       }
+      await refreshActiveFileNotes();
     } catch (_) {}
+  }
+
+  async function refreshActiveFileNotes() {
+    if (!activeSandboxId || !activeSandboxFilePath) {
+      activeFileNotes = [];
+      return;
+    }
+    try {
+      activeFileNotes = await GetFileNotes(activeSandboxId, activeSandboxFilePath);
+    } catch (err) {
+      logSystem('Failed to load file notes: ' + String(err), 'error');
+    }
+  }
+
+  function toggleNoteEditing(id) {
+    if (editingNoteIds[id]) {
+      editingNoteIds = { ...editingNoteIds, [id]: false };
+      activeFileNoteDrafts[id] = undefined;
+    } else {
+      const note = activeFileNotes.find(n => n.id === id);
+      activeFileNoteDrafts[id] = note ? note.content : '';
+      editingNoteIds = { ...editingNoteIds, [id]: true };
+    }
+  }
+
+  async function handleAddFileNote() {
+    if (!activeSandboxId || !activeSandboxFilePath) {
+      addToast('Select a file to add notes', 'error');
+      return;
+    }
+    const title = await openPrompt('New Note Title', 'Observations');
+    if (!title) return;
+    try {
+      await AddFileNote(activeSandboxId, activeSandboxFilePath, title.trim() || 'Observations', `# ${title.trim()}\n\nStart writing your observations...`);
+      await refreshActiveFileNotes();
+      addToast('Note added', 'success');
+    } catch (err) {
+      logSystem('Failed to add note: ' + String(err), 'error');
+    }
+  }
+
+  async function handleSaveFileNote(note) {
+    try {
+      await UpdateFileNote(note.id, note.title, activeFileNoteDrafts[note.id] ?? '');
+      editingNoteIds = { ...editingNoteIds, [note.id]: false };
+      activeFileNoteDrafts[note.id] = undefined;
+      await refreshActiveFileNotes();
+      addToast('Note saved', 'success');
+    } catch (err) {
+      logSystem('Failed to save note: ' + String(err), 'error');
+    }
+  }
+
+  async function handleDeleteFileNote(noteId) {
+    if (!confirm('Delete this note?')) return;
+    try {
+      await DeleteFileNote(noteId);
+      await refreshActiveFileNotes();
+      addToast('Note deleted', 'success');
+    } catch (err) {
+      logSystem('Failed to delete note: ' + String(err), 'error');
+    }
   }
 
   async function createVirtualFolder() {
@@ -415,7 +492,6 @@ env_vars:
     if (!virtualFolders.includes(cleanFolder)) {
       virtualFolders = [...virtualFolders, cleanFolder];
       expandedVirtualFolders[cleanFolder] = true;
-      addToast(`Folder '${cleanFolder}' created`, 'success');
     }
   }
 
@@ -434,7 +510,7 @@ env_vars:
       await selectSandbox(sandbox);
       addToast('Sandbox experiment created', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Failed to create sandbox: ' + String(err), 'error');
     }
   }
 
@@ -453,7 +529,7 @@ env_vars:
       try {
         await RenameSandbox(activeSandboxId, cleanName);
       } catch (err) {
-        addToast('Failed to save title: ' + String(err), 'error');
+        logSystem('Failed to save title: ' + String(err), 'error');
       }
     };
 
@@ -465,10 +541,13 @@ env_vars:
   async function selectSandbox(sandbox) {
     if (activeSandboxId === sandbox.id && sandbox.isActive) return;
 
+    isActivatingSandbox = true;
     try {
       await ActivateSandbox(activeWorkspaceId, sandbox.id);
     } catch (err) {
-      addToast('Failed to activate sandbox code: ' + String(err), 'error');
+      logSystem('Activation error: ' + String(err), 'error');
+    } finally {
+      isActivatingSandbox = false;
     }
 
     sandboxesList = sandboxesList.map(s => ({
@@ -483,12 +562,9 @@ env_vars:
     activeSandboxConfig = wsConfig;
     lastSavedSandboxConfig = wsConfig;
 
-    activeSandboxMarkdownNote = sandbox.markdownNote || '';
     activeSandboxHTMLNote = sandbox.htmlNote || '';
-    lastSavedSandboxMarkdownNote = sandbox.markdownNote || '';
     lastSavedSandboxHTMLNote = sandbox.htmlNote || '';
 
-    isSandboxMarkdownEditing = false;
     isSandboxHTMLEditing = false;
 
     activeSandboxFilePath = '';
@@ -517,6 +593,7 @@ env_vars:
     activeSandboxFileContent = file.content;
     lastSavedSandboxFileContent = file.content;
     updateSandboxEditor(file.content, activeSandboxFileName);
+    await refreshActiveFileNotes();
   }
 
   async function handleCreateSandboxFile() {
@@ -528,9 +605,8 @@ env_vars:
       await refreshSandboxFiles();
       const created = sandboxFilesList.find(f => f.path === name);
       if (created) await selectSandboxFile(created);
-      addToast('File created', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Failed to create file: ' + String(err), 'error');
     }
   }
 
@@ -545,9 +621,8 @@ env_vars:
         lastSavedSandboxFileContent = '';
       }
       await refreshSandboxFiles();
-      addToast('File deleted', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Failed to delete file: ' + String(err), 'error');
     }
   }
 
@@ -566,19 +641,17 @@ env_vars:
       }
 
       if (activeSandboxNotesUnsaved) {
-        await SaveSandboxNotes(activeSandboxId, activeSandboxMarkdownNote, activeSandboxHTMLNote);
-        lastSavedSandboxMarkdownNote = activeSandboxMarkdownNote;
+        await SaveSandboxNotes(activeSandboxId, '', activeSandboxHTMLNote);
         lastSavedSandboxHTMLNote = activeSandboxHTMLNote;
         const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
         if (si !== -1) {
-          sandboxesList[si].markdownNote = activeSandboxMarkdownNote;
           sandboxesList[si].htmlNote = activeSandboxHTMLNote;
         }
       }
 
-      addToast('Saved to database', 'success');
+      addToast('Saved', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Save error: ' + String(err), 'error');
     }
   }
 
@@ -590,7 +663,24 @@ env_vars:
       if (activeSandboxId === id) clearActiveSandbox();
       addToast('Sandbox deleted', 'success');
     } catch (err) {
-      addToast(String(err), 'error');
+      logSystem('Delete sandbox error: ' + String(err), 'error');
+    }
+  }
+
+  async function triggerInitializeEnvironment() {
+    isInitializingEnv = true;
+    setupLogs = [];
+    try {
+      logSystem(`Starting environment setup for workspace '${activeWorkspaceId}'...`, 'info');
+      await InitializeEnvironment(activeWorkspaceId);
+      isEnvInitialized = true;
+      showInitEnvModal = false;
+      addToast('Environment Initialized', 'success');
+      logSystem('Workspace environment initialized successfully.', 'success');
+    } catch (err) {
+      logSystem('Environment initialization failed: ' + String(err), 'error');
+    } finally {
+      isInitializingEnv = false;
     }
   }
 
@@ -604,7 +694,7 @@ env_vars:
       a.download = `sandbox_${id}.json`;
       a.click();
       addToast('Sandbox exported', 'success');
-    } catch (err) { addToast(String(err), 'error'); }
+    } catch (err) { logSystem(String(err), 'error'); }
   }
 
   async function handleImportSandboxFile(e) {
@@ -617,7 +707,7 @@ env_vars:
         await loadSandboxesForWorkspace(activeWorkspaceId);
         await selectSandbox(imported);
         addToast('Sandbox imported', 'success');
-      } catch (err) { addToast(String(err), 'error'); }
+      } catch (err) { logSystem(String(err), 'error'); }
     };
     reader.readAsText(file);
   }
@@ -631,8 +721,8 @@ env_vars:
       a.href = url;
       a.download = `workspace_backup_${wsId}.json`;
       a.click();
-      addToast('Workspace backup created', 'success');
-    } catch (err) { addToast(String(err), 'error'); }
+      addToast('Backup created', 'success');
+    } catch (err) { logSystem(String(err), 'error'); }
   }
 
   async function handleRestoreWorkspaceFile(e) {
@@ -645,7 +735,7 @@ env_vars:
         await loadWorkspaces();
         await switchWorkspace(restored.id);
         addToast('Workspace restored', 'success');
-      } catch (err) { addToast(String(err), 'error'); }
+      } catch (err) { logSystem(String(err), 'error'); }
     };
     reader.readAsText(file);
   }
@@ -708,24 +798,11 @@ env_vars:
         consoleStatus = 'Uninitialized Env';
       } else {
         consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Error] ${String(err)}`, type: 'error' }];
+        logSystem(`Run Error: ${String(err)}`, 'error');
         consoleStatus = 'Error';
       }
       isConsoleRunning = false;
       activeRunnerId = '';
-    }
-  }
-
-  async function triggerInitializeEnvironment() {
-    isInitializingEnv = true;
-    try {
-      await InitializeEnvironment(activeWorkspaceId);
-      isEnvInitialized = true;
-      showInitEnvModal = false;
-      addToast('Environment dependencies initialized', 'success');
-    } catch (err) {
-      addToast('Init failed: ' + String(err), 'error');
-    } finally {
-      isInitializingEnv = false;
     }
   }
 
@@ -744,8 +821,9 @@ env_vars:
     try {
       await ResetAndReinitializeEverything();
       showResetConfirmModal = false;
-      addToast('System reset successfully', 'success');
+      addToast('Reset complete', 'success');
       consoleLogs = [];
+      systemLogs = [];
       consoleStatus = 'Ready';
       isConsoleRunning = false;
       activeRunnerId = '';
@@ -754,7 +832,7 @@ env_vars:
       activeWorkspaceId = 'default';
       await loadWorkspaces();
     } catch (err) {
-      addToast('Reset failed: ' + String(err), 'error');
+      logSystem('Reset error: ' + String(err), 'error');
     } finally {
       isResetting = false;
     }
@@ -793,6 +871,13 @@ env_vars:
       }
     });
 
+    EventsOn('setup_output', (data) => {
+      if (data.line) {
+        setupLogs = [...setupLogs, data.line];
+        logSystem(data.line, 'info');
+      }
+    });
+
     EventsOn('terminal_status', (data) => {
       if (data.id.startsWith('runner_')) {
         consoleStatus = data.status === '0' ? 'Finished' : 'Error';
@@ -807,6 +892,7 @@ env_vars:
   });
 </script>
 
+<!-- Clean Bottom-Right Toast Notifications Container -->
 <div class="toast-container">
   {#each toasts as toast (toast.id)}
     <div class="toast {toast.type}"><span class="toast-message">{toast.message}</span></div>
@@ -829,7 +915,49 @@ env_vars:
   </div>
 {/if}
 
-<!-- Workspace Creation Modal with Environment Templates -->
+<!-- Environment Initialization Loading Modal -->
+{#if showInitEnvModal}
+  <div class="modal-backdrop" onclick={() => { if (!isInitializingEnv) showInitEnvModal = false; }} role="presentation">
+    <div class="modal-box env-init-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">
+        <Cpu size={16} class="icon-spin-color" /> Environment Initialization
+      </div>
+      <div class="modal-body">
+        <p class="guide-text">
+          Workspace <strong>{activeWorkspaceObj?.name}</strong> needs to initialize its environment dependencies before execution.
+        </p>
+
+        {#if isInitializingEnv}
+          <div class="setup-loading-box">
+            <div class="loading-status-row">
+              <Loader2 size={16} class="spinner" />
+              <span>Initializing workspace runtime...</span>
+            </div>
+            <div class="setup-console-box">
+              {#each setupLogs as line}
+                <div class="setup-line">{line}</div>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <p class="guide-subtext">Click below to execute environment setup steps.</p>
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showInitEnvModal = false} disabled={isInitializingEnv}>Dismiss</button>
+        <button class="modal-btn primary" onclick={triggerInitializeEnvironment} disabled={isInitializingEnv}>
+          {#if isInitializingEnv}
+            <Loader2 size={13} class="spinner" /> Initializing...
+          {:else}
+            Initialize Environment
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Workspace Creation Modal -->
 {#if showCreateWorkspaceModal}
   <div class="modal-backdrop" onclick={() => showCreateWorkspaceModal = false} role="presentation">
     <div class="modal-box ws-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
@@ -837,7 +965,7 @@ env_vars:
       <div class="modal-body">
         <label class="sandbox-modal-label" for="wsName">Workspace Name</label>
         <input type="text" id="wsName" class="modal-input" placeholder="e.g. Raylib Go Engine Lab" bind:value={newWorkspaceName} />
-
+        
         <label class="sandbox-modal-label" for="wsDesc">Description</label>
         <input type="text" id="wsDesc" class="modal-input" placeholder="Shared runtime description..." bind:value={newWorkspaceDesc} />
 
@@ -873,14 +1001,14 @@ env_vars:
   </div>
 {/if}
 
-<!-- Sandbox Creation Modal (No Environment Templates) -->
+<!-- Sandbox Creation Modal -->
 {#if showCreateSandboxModal}
   <div class="modal-backdrop" onclick={() => showCreateSandboxModal = false} role="presentation">
     <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <div class="modal-header">New Sandbox Experiment</div>
       <div class="modal-body">
         <p class="guide-text">
-          Sandboxes inherit the environment and dependencies from <strong>{activeWorkspaceObj?.name}</strong>.
+          Sandboxes inherit environment dependencies from <strong>{activeWorkspaceObj?.name}</strong>.
         </p>
         <label class="sandbox-modal-label" for="sandboxName">Experiment Name</label>
         <input type="text" id="sandboxName" class="modal-input" placeholder="e.g. Physics Demo" bind:value={newSandboxName} />
@@ -888,23 +1016,6 @@ env_vars:
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={() => showCreateSandboxModal = false}>Cancel</button>
         <button class="modal-btn primary" onclick={confirmCreateSandbox}>Create Sandbox</button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-{#if showInitEnvModal}
-  <div class="modal-backdrop" onclick={() => showInitEnvModal = false} role="presentation">
-    <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
-      <div class="modal-header">Initialize Shared Environment</div>
-      <div class="modal-body">
-        <p class="guide-text">Run setup commands &amp; install workspace dependencies into environment directory?</p>
-      </div>
-      <div class="modal-footer">
-        <button class="modal-btn secondary" onclick={() => showInitEnvModal = false} disabled={isInitializingEnv}>Cancel</button>
-        <button class="modal-btn primary" onclick={triggerInitializeEnvironment} disabled={isInitializingEnv}>
-          {isInitializingEnv ? 'Initializing...' : 'Initialize Environment'}
-        </button>
       </div>
     </div>
   </div>
@@ -944,7 +1055,7 @@ env_vars:
             <option value={ws.id}>{ws.name}</option>
           {/each}
         </select>
-        <button class="ws-add-btn" onclick={openCreateWorkspaceModal} title="New Workspace Database"><Plus size={12} /></button>
+        <button class="ws-add-btn" onclick={openCreateWorkspaceModal} title="New Workspace Container"><Plus size={12} /></button>
       </div>
     </div>
 
@@ -1052,7 +1163,14 @@ env_vars:
             </div>
 
             <!-- Working Split Area -->
-            <div class="sandbox-working-split">
+            <div class="sandbox-working-split" class:relative-container={isActivatingSandbox}>
+              {#if isActivatingSandbox}
+                <div class="activation-overlay">
+                  <Loader2 size={24} class="spinner" />
+                  <span>Syncing sandbox files...</span>
+                </div>
+              {/if}
+
               <!-- Left: Virtual Files + Code Editor -->
               <div class="sandbox-main-area">
                 {#if showSandboxExplorer}
@@ -1097,26 +1215,59 @@ env_vars:
                     {#if sandboxSplitType === 'markdown'}
                       <div class="split-pane">
                         <div class="pane-action-header">
-                          <span class="pane-title">RESEARCH NOTES (MARKDOWN)</span>
-                          <button class="edit-toggle-btn" onclick={() => isSandboxMarkdownEditing = !isSandboxMarkdownEditing}>
-                            {#if isSandboxMarkdownEditing}<Eye size={11} /> View{:else}<Edit3 size={11} /> Edit{/if}
+                          <span class="pane-title">MARKDOWN NOTES {#if activeFileNotes.length > 0}<span class="notes-count-badge">{activeFileNotes.length}</span>{/if}</span>
+                          <button class="edit-toggle-btn" onclick={handleAddFileNote}>
+                            <Plus size={11} /> Add Note
                           </button>
                         </div>
-                        {#if isSandboxMarkdownEditing}
-                          <textarea class="raw-textarea" bind:value={activeSandboxMarkdownNote} placeholder="Write markdown observations..."></textarea>
-                        {:else}
-                          <div class="markdown-preview">
-                            {#each activeSandboxMarkdownNote.split('\n') as line}
-                              {@const part = renderMarkdownLine(line)}
-                              {#if part.type === 'h1'}<h1>{part.text}</h1>
-                              {:else if part.type === 'h2'}<h2>{part.text}</h2>
-                              {:else if part.type === 'h3'}<h3>{part.text}</h3>
-                              {:else if part.type === 'quote'}<blockquote>{part.text}</blockquote>
-                              {:else if part.type === 'li'}<li>{part.text}</li>
-                              {:else if part.type === 'codeblock'}<pre class="codeblock"><code>{part.text}</code></pre>
-                              {:else if part.type === 'br'}<br />
-                              {:else}<p>{part.text}</p>{/if}
+                        {#if activeSandboxFilePath}
+                          <div class="file-notes-list">
+                            {#each activeFileNotes as note, i (note.id)}
+                              <div class="file-note-card">
+                                <div class="file-note-header">
+                                  <span class="file-note-index">#{i + 1}</span>
+                                  <span class="file-note-title">{note.title}</span>
+                                  <span class="file-note-time">{note.createdAt ? new Date(note.createdAt).toLocaleString() : ''}</span>
+                                  <div class="file-note-actions">
+                                    {#if editingNoteIds[note.id]}
+                                      <button class="note-action-btn" onclick={() => handleSaveFileNote(note)} title="Save"><Save size={11} /></button>
+                                    {/if}
+                                    <button class="note-action-btn" onclick={() => toggleNoteEditing(note.id)}>
+                                      {#if editingNoteIds[note.id]}<Eye size={11} /> View{:else}<Edit3 size={11} /> Edit{/if}
+                                    </button>
+                                    <button class="note-action-btn danger" onclick={() => handleDeleteFileNote(note.id)} title="Delete"><Trash2 size={11} /></button>
+                                  </div>
+                                </div>
+                                {#if editingNoteIds[note.id]}
+                                  <textarea class="raw-textarea" bind:value={activeFileNoteDrafts[note.id]} placeholder="Write markdown observations..."></textarea>
+                                {:else}
+                                  <div class="markdown-preview">
+                                    {#each note.content.split('\n') as line}
+                                      {@const part = renderMarkdownLine(line)}
+                                      {#if part.type === 'h1'}<h1>{part.text}</h1>
+                                      {:else if part.type === 'h2'}<h2>{part.text}</h2>
+                                      {:else if part.type === 'h3'}<h3>{part.text}</h3>
+                                      {:else if part.type === 'quote'}<blockquote>{part.text}</blockquote>
+                                      {:else if part.type === 'li'}<li>{part.text}</li>
+                                      {:else if part.type === 'codeblock'}<pre class="codeblock"><code>{part.text}</code></pre>
+                                      {:else if part.type === 'br'}<br />
+                                      {:else}<p>{part.text}</p>{/if}
+                                    {/each}
+                                  </div>
+                                {/if}
+                              </div>
                             {/each}
+                            {#if activeFileNotes.length === 0}
+                              <div class="empty-notes-hint">
+                                <FileText size={16} />
+                                <span>No notes yet for <strong>{activeSandboxFileName}</strong>. Add one to track your observations.</span>
+                              </div>
+                            {/if}
+                          </div>
+                        {:else}
+                          <div class="empty-notes-hint">
+                            <FileText size={16} />
+                            <span>Select a file to view or write its markdown notes.</span>
                           </div>
                         {/if}
                       </div>
@@ -1153,6 +1304,7 @@ env_vars:
             <TerminalDrawer
               bind:bottomMode
               bind:consoleLogs
+              bind:systemLogs
               bind:consoleStatus
               bind:isConsoleRunning
               bind:terminals={sandboxTerminals}
@@ -1166,7 +1318,10 @@ env_vars:
                   await StartTerminalSession(id, sandboxDir);
                 } catch (_) {}
               }}
-              onClearConsole={() => { consoleLogs = []; consoleStatus = 'Ready'; }}
+              onClearConsole={() => {
+                if (bottomMode === 'syslog') systemLogs = [];
+                else { consoleLogs = []; consoleStatus = 'Ready'; }
+              }}
               onMinimize={() => isConsoleOpen = false}
             />
           </div>
@@ -1192,10 +1347,6 @@ env_vars:
             <label class="modal-btn secondary file-btn">
               <Upload size={13} /> Restore Workspace
               <input type="file" accept=".json" onchange={handleRestoreWorkspaceFile} hidden />
-            </label>
-            <label class="modal-btn secondary file-btn">
-              <Upload size={13} /> Import Sandbox
-              <input type="file" accept=".json" onchange={handleImportSandboxFile} hidden />
             </label>
             <button class="modal-btn primary" onclick={openCreateWorkspaceModal}><Plus size={13} /> New Workspace</button>
           </div>
@@ -1252,6 +1403,36 @@ env_vars:
     height: 100vh;
     overflow: hidden;
   }
+
+  /* Non-intrusive Toast Container in Bottom-Right Corner */
+  .toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .toast {
+    pointer-events: auto;
+    background-color: #12121a;
+    border: 1px solid #2d3748;
+    color: #edf2f7;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    box-shadow: 0 4px 12px #00000088;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toast.error { border-color: #e53e3e88; background-color: #1c1012; color: #fc8181; }
+  .toast.success { border-color: #48bb7888; background-color: #0f1c14; color: #68d391; }
+  .toast.info { border-color: #3178c688; background-color: #101622; color: #63b3ed; }
 
   .app-shell {
     display: flex;
@@ -1461,7 +1642,6 @@ env_vars:
 
   .sb-item-row:hover { background-color: #1a1a24; color: #edf2f7; }
   .sb-item-row.active { background-color: #ff5a3622; color: #ff5a36; font-weight: 600; }
-  .sb-item-row.nested { margin-left: 10px; }
 
   .sb-item-title {
     display: flex;
@@ -1471,21 +1651,18 @@ env_vars:
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12px;
+    flex: 1;
   }
-
-  :global(.sb-icon) { color: #ff5a36; flex-shrink: 0; }
 
   .active-badge {
     font-size: 9px;
-    font-weight: 700;
+    font-weight: 800;
+    background-color: #48bb7822;
     color: #48bb78;
-    background-color: #48bb7818;
-    padding: 2px 5px;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    flex-shrink: 0;
+    border: 1px solid #48bb7844;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 4px;
   }
 
   .sb-item-actions {
@@ -1569,7 +1746,7 @@ env_vars:
     outline: none;
     padding: 2px 6px;
     border-radius: 4px;
-    width: 240px;
+    width: 200px;
   }
 
   .sandbox-title-input:hover,
@@ -1580,16 +1757,15 @@ env_vars:
 
   .runtime-badge {
     font-size: 10px;
-    font-weight: 700;
-    color: #ff8c73;
-    background-color: #ff5a3614;
-    border: 1px solid #ff5a3633;
-    padding: 3px 8px;
-    border-radius: 12px;
+    color: #48bb78;
+    background-color: #48bb7814;
+    border: 1px solid #48bb7833;
+    padding: 2px 6px;
+    border-radius: 4px;
     display: flex;
     align-items: center;
     gap: 4px;
-    white-space: nowrap;
+    font-weight: 600;
   }
 
   .control-actions {
@@ -1613,7 +1789,6 @@ env_vars:
   }
 
   .action-btn:hover { color: #edf2f7; border-color: #4a5568; }
-  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .action-btn.run { background-color: #48bb7822; color: #48bb78; border-color: #48bb7844; }
   .action-btn.run:hover { background-color: #48bb7833; }
   .action-btn.stop { background-color: #ff5a3622; color: #ff5a36; border-color: #ff5a3644; }
@@ -1625,6 +1800,22 @@ env_vars:
     flex-direction: row;
     min-height: 0;
     overflow: hidden;
+    position: relative;
+  }
+
+  .activation-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #0b0b0fdd;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #ff5a36;
+    font-size: 13px;
+    font-weight: 600;
   }
 
   .sandbox-main-area {
@@ -1812,8 +2003,9 @@ env_vars:
   }
 
   .yaml-editor {
-    height: 200px;
-    flex: none;
+    height: 160px;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
   }
 
   .markdown-preview {
@@ -1831,6 +2023,122 @@ env_vars:
   .markdown-preview blockquote { border-left: 3px solid #ff5a36; margin: 8px 0; padding-left: 10px; color: #a0aec0; }
   .markdown-preview .codeblock { background: #07070a; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; color: #34d399; }
 
+  .notes-count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background-color: #ff5a36;
+    color: #0b0b0f;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+
+  .file-notes-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .file-note-card {
+    background-color: #10101a;
+    border: 1px solid #1f1f2c;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .file-note-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background-color: #0a0a0f;
+    border-bottom: 1px solid #1a1a24;
+  }
+
+  .file-note-index {
+    font-size: 10px;
+    font-weight: 700;
+    color: #ff5a36;
+    background-color: #ff5a3618;
+    border-radius: 4px;
+    padding: 2px 6px;
+    flex-shrink: 0;
+  }
+
+  .file-note-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #edf2f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .file-note-time {
+    font-size: 9px;
+    color: #6b7280;
+    white-space: nowrap;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .file-note-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .note-action-btn {
+    background: none;
+    border: none;
+    color: #a0aec0;
+    font-size: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+
+  .note-action-btn:hover { background-color: #1f1f2c; color: #edf2f7; }
+  .note-action-btn.danger:hover { color: #fc8181; }
+
+  .file-note-card .markdown-preview {
+    flex: none;
+    padding: 10px 12px;
+    max-height: 260px;
+  }
+
+  .file-note-card .raw-textarea {
+    flex: none;
+    min-height: 140px;
+  }
+
+  .empty-notes-hint {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #6b7280;
+    font-size: 12px;
+    text-align: center;
+    padding: 20px;
+  }
+
   .html-frame-wrapper {
     flex: 1;
     width: 100%;
@@ -1842,6 +2150,49 @@ env_vars:
     width: 100%;
     height: 100%;
     border: none;
+  }
+
+  /* Environment Initialization Loading Modal Box */
+  .setup-loading-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .loading-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #ff5a36;
+  }
+
+  .setup-console-box {
+    background-color: #07070a;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 8px 10px;
+    max-height: 140px;
+    overflow-y: auto;
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: #34d399;
+  }
+
+  .setup-line {
+    line-height: 1.4;
+    white-space: pre-wrap;
+  }
+
+  :global(.spinner) {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 
   /* Empty Workbench */
@@ -1931,14 +2282,11 @@ env_vars:
     background-color: #0f0f17;
     border: 1px solid #2d3748;
     border-radius: 8px;
-    width: 380px;
+    width: 420px;
     display: flex;
     flex-direction: column;
     box-shadow: 0 10px 25px #00000088;
-    max-height: 90vh;
   }
-
-  .modal-box.ws-modal { width: 520px; }
 
   .modal-header {
     padding: 14px 16px;
@@ -1946,6 +2294,9 @@ env_vars:
     font-weight: 700;
     color: #edf2f7;
     border-bottom: 1px solid #1a1a24;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .modal-body {
@@ -1953,7 +2304,6 @@ env_vars:
     display: flex;
     flex-direction: column;
     gap: 10px;
-    overflow-y: auto;
   }
 
   .modal-input {
@@ -1968,36 +2318,45 @@ env_vars:
 
   .modal-input:focus { border-color: #ff5a36; }
 
+  .config-mode-toggle {
+    display: flex;
+    gap: 4px;
+    background-color: #07070a;
+    border: 1px solid #2d3748;
+    padding: 3px;
+    border-radius: 6px;
+    margin-top: 4px;
+  }
+
+  .mode-btn {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #a0aec0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .mode-btn.active {
+    background-color: #ff5a361a;
+    color: #ff5a36;
+  }
+
   .sandbox-modal-label {
     font-size: 11px;
     font-weight: 600;
     color: #a0aec0;
   }
 
-  .config-mode-toggle {
-    display: flex;
-    gap: 6px;
-    margin-top: 4px;
-  }
-
-  .mode-btn {
-    flex: 1;
-    background-color: #07070a;
-    border: 1px solid #2d3748;
-    border-radius: 4px;
-    padding: 8px;
-    color: #a0aec0;
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .mode-btn.active { border-color: #ff5a36; background-color: #ff5a3614; color: #edf2f7; }
-
   .templates-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
+    max-height: 180px;
+    overflow-y: auto;
   }
 
   .template-option {
@@ -2020,7 +2379,7 @@ env_vars:
     border-radius: 50%;
   }
 
-  .template-name { font-size: 12px; font-weight: 600; }
+  .template-name { font-size: 11px; font-weight: 600; }
 
   .modal-footer {
     padding: 12px 16px;
@@ -2042,13 +2401,10 @@ env_vars:
     gap: 6px;
   }
 
-  .modal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .modal-btn.primary { background-color: #ff5a36; color: #fff; }
   .modal-btn.primary:hover { background-color: #ff451d; }
   .modal-btn.secondary { background-color: #1a1a24; color: #a0aec0; border: 1px solid #2d3748; }
   .modal-btn.secondary:hover { color: #edf2f7; border-color: #4a5568; }
-  .modal-btn.danger-btn { background-color: #e53e3e; color: #fff; }
-  .modal-btn.danger-btn:hover { background-color: #c53030; }
 
   .file-btn { display: inline-flex; align-items: center; cursor: pointer; }
 
@@ -2122,6 +2478,9 @@ env_vars:
   .danger-modal { border-color: #e53e3e44; }
   .danger-header { color: #fc8181; display: flex; align-items: center; gap: 8px; }
   .danger-text { color: #feb2b2; }
+
+  .modal-btn.danger-btn { background-color: #e53e3e; color: #fff; }
+  .modal-btn.danger-btn:hover { background-color: #c53030; }
 
   .guide-text { font-size: 12px; color: #a0aec0; line-height: 1.5; }
   .guide-subtext { font-size: 11px; color: #718096; line-height: 1.4; margin-top: 6px; }

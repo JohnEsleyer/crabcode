@@ -20,12 +20,6 @@ type DeclarativeConfig struct {
 	Setup       []SetupStep       `json:"setup" yaml:"setup"`
 	EnvVars     map[string]string `json:"envVars" yaml:"env_vars"`
 	Mappings    ButtonMappings    `json:"mappings" yaml:"mappings"`
-	Notes       NotesSpec         `json:"notes" yaml:"notes"`
-}
-
-type NotesSpec struct {
-	Markdown string `json:"markdown" yaml:"markdown"`
-	HTML     string `json:"html" yaml:"html"`
 }
 
 type TemplateFile struct {
@@ -76,6 +70,19 @@ type SandboxFile struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
+// FileNote is a FIFO Markdown note attached to a single sandbox file. Notes
+// are runtime data stored in the file_notes table, never in the workspace
+// configuration, so documentation can evolve without touching the IaC spec.
+type FileNote struct {
+	ID        string `json:"id"`
+	SandboxID string `json:"sandboxId"`
+	FilePath  string `json:"filePath"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
 type GlobalSettings struct {
 	CrabRootPath    string `json:"crabRootPath"`
 	UniversalEnvDir string `json:"universalEnvDir"`
@@ -84,6 +91,7 @@ type GlobalSettings struct {
 type SandboxExportData struct {
 	Sandbox Sandbox       `json:"sandbox"`
 	Files   []SandboxFile `json:"files"`
+	Notes   []FileNote    `json:"notes"`
 }
 
 type WorkspaceBackupData struct {

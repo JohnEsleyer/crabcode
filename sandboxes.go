@@ -68,6 +68,7 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, folder stri
 	// Create default starter file matching workspace config
 	mainFileName, mainContent := getStarterFileForConfig(cfg)
 	_ = a.SaveSandboxFile(id, mainFileName, mainContent, false)
+	_, _ = a.AddFileNote(id, mainFileName, "Initial Observations", fmt.Sprintf("# Initial Notes for %s\n\nObservations and benchmark notes.", mainFileName))
 
 	sb := &Sandbox{
 		ID:           id,
@@ -138,6 +139,7 @@ func (a *App) DeleteSandbox(id string) error {
 	if a.db == nil {
 		return errors.New("database not initialized")
 	}
+	_, _ = a.db.Exec("DELETE FROM file_notes WHERE sandbox_id = ?", id)
 	_, _ = a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ?", id)
 	_, err := a.db.Exec("DELETE FROM sandboxes WHERE id = ?", id)
 	return err
@@ -149,6 +151,70 @@ func (a *App) SaveSandboxNotes(id string, markdownNote string, htmlNote string) 
 	}
 	now := time.Now().Format(time.RFC3339)
 	_, err := a.db.Exec("UPDATE sandboxes SET markdown_note = ?, html_note = ?, updated_at = ? WHERE id = ?", markdownNote, htmlNote, now, id)
+	return err
+}
+
+func (a *App) GetFileNotes(sandboxID string, filePath string) ([]FileNote, error) {
+	if a.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+
+	rows, err := a.db.Query("SELECT id, sandbox_id, file_path, title, content, created_at, updated_at FROM file_notes WHERE sandbox_id = ? AND file_path = ? ORDER BY created_at ASC", sandboxID, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	notes := make([]FileNote, 0)
+	for rows.Next() {
+		var n FileNote
+		if err := rows.Scan(&n.ID, &n.SandboxID, &n.FilePath, &n.Title, &n.Content, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+func (a *App) AddFileNote(sandboxID string, filePath string, title string, content string) (*FileNote, error) {
+	if a.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	_, err := a.db.Exec(
+		"INSERT INTO file_notes (id, sandbox_id, file_path, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		id, sandboxID, filePath, title, content, now, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &FileNote{
+		ID:        id,
+		SandboxID: sandboxID,
+		FilePath:  filePath,
+		Title:     title,
+		Content:   content,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+func (a *App) UpdateFileNote(noteID string, title string, content string) error {
+	if a.db == nil {
+		return errors.New("database not initialized")
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err := a.db.Exec("UPDATE file_notes SET title = ?, content = ?, updated_at = ? WHERE id = ?", title, content, now, noteID)
+	return err
+}
+
+func (a *App) DeleteFileNote(noteID string) error {
+	if a.db == nil {
+		return errors.New("database not initialized")
+	}
+	_, err := a.db.Exec("DELETE FROM file_notes WHERE id = ?", noteID)
 	return err
 }
 
@@ -218,6 +284,7 @@ func (a *App) DeleteSandboxFile(sandboxID string, path string) error {
 		return errors.New("database not initialized")
 	}
 
+	_, _ = a.db.Exec("DELETE FROM file_notes WHERE sandbox_id = ? AND file_path = ?", sandboxID, path)
 	_, err := a.db.Exec("DELETE FROM sandbox_files WHERE sandbox_id = ? AND path = ?", sandboxID, path)
 
 	var workspaceID, activeSandboxID string
@@ -241,13 +308,37 @@ func (a *App) ExportSandbox(sandboxID string) (string, error) {
 	}
 
 	files, _ := a.GetSandboxFiles(sandboxID)
+	notes, _ := a.allFileNotes(sandboxID)
 	payload := SandboxExportData{
 		Sandbox: s,
 		Files:   files,
+		Notes:   notes,
 	}
 
 	b, err := json.MarshalIndent(payload, "", "  ")
 	return string(b), err
+}
+
+func (a *App) allFileNotes(sandboxID string) ([]FileNote, error) {
+	if a.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+
+	rows, err := a.db.Query("SELECT id, sandbox_id, file_path, title, content, created_at, updated_at FROM file_notes WHERE sandbox_id = ? ORDER BY created_at ASC", sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	notes := make([]FileNote, 0)
+	for rows.Next() {
+		var n FileNote
+		if err := rows.Scan(&n.ID, &n.SandboxID, &n.FilePath, &n.Title, &n.Content, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
 }
 
 func (a *App) ImportSandbox(workspaceID string, jsonContent string) (*Sandbox, error) {
@@ -263,6 +354,10 @@ func (a *App) ImportSandbox(workspaceID string, jsonContent string) (*Sandbox, e
 
 	for _, f := range payload.Files {
 		_ = a.SaveSandboxFile(sb.ID, f.Path, f.Content, f.IsDir)
+	}
+
+	for _, n := range payload.Notes {
+		_, _ = a.AddFileNote(sb.ID, n.FilePath, n.Title, n.Content)
 	}
 
 	return sb, nil

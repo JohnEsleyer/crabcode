@@ -16,20 +16,6 @@ export namespace main {
 	        this.test = source["test"];
 	    }
 	}
-	export class NotesSpec {
-	    markdown: string;
-	    html: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new NotesSpec(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.markdown = source["markdown"];
-	        this.html = source["html"];
-	    }
-	}
 	export class SetupStep {
 	    name: string;
 	    command: string;
@@ -52,7 +38,6 @@ export namespace main {
 	    setup: SetupStep[];
 	    envVars: Record<string, string>;
 	    mappings: ButtonMappings;
-	    notes: NotesSpec;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeclarativeConfig(source);
@@ -67,7 +52,6 @@ export namespace main {
 	        this.setup = this.convertValues(source["setup"], SetupStep);
 	        this.envVars = source["envVars"];
 	        this.mappings = this.convertValues(source["mappings"], ButtonMappings);
-	        this.notes = this.convertValues(source["notes"], NotesSpec);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -88,6 +72,30 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class FileNote {
+	    id: string;
+	    sandboxId: string;
+	    filePath: string;
+	    title: string;
+	    content: string;
+	    createdAt: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileNote(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.sandboxId = source["sandboxId"];
+	        this.filePath = source["filePath"];
+	        this.title = source["title"];
+	        this.content = source["content"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class GlobalSettings {
 	    crabRootPath: string;
 	    universalEnvDir: string;
@@ -102,7 +110,6 @@ export namespace main {
 	        this.universalEnvDir = source["universalEnvDir"];
 	    }
 	}
-	
 	export class Sandbox {
 	    id: string;
 	    workspaceId: string;

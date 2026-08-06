@@ -101,15 +101,6 @@ func (a *App) createDefaultSandboxForWorkspace(workspaceID string, wsName string
 	markdownNote := "# " + wsName + " Sandbox\n\nShared environment sandbox experiment."
 	htmlNote := "<h3>🧪 " + wsName + " Primary Sandbox Active</h3>"
 
-	if tmpl != nil {
-		if tmpl.Config.Notes.Markdown != "" {
-			markdownNote = tmpl.Config.Notes.Markdown
-		}
-		if tmpl.Config.Notes.HTML != "" {
-			htmlNote = tmpl.Config.Notes.HTML
-		}
-	}
-
 	_, err := a.db.Exec(
 		"INSERT INTO sandboxes (id, workspace_id, name, folder, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, 'Main Sandbox', '', ?, ?, ?, ?)",
 		id, workspaceID, markdownNote, htmlNote, now, now,
@@ -122,11 +113,13 @@ func (a *App) createDefaultSandboxForWorkspace(workspaceID string, wsName string
 		for _, f := range tmpl.Files {
 			_ = a.SaveSandboxFile(id, f.Path, f.Content, f.IsDir)
 		}
+		_, _ = a.AddFileNote(id, tmpl.Files[0].Path, "Initial Observations", fmt.Sprintf("# Initial Notes for %s\n\nObservations and benchmark notes.", tmpl.Files[0].Path))
 	} else {
 		var cfg DeclarativeConfig
 		_ = yaml.Unmarshal([]byte(a.GetWorkspaceConfigString(workspaceID)), &cfg)
 		mainName, mainContent := getStarterFileForConfig(&cfg)
 		_ = a.SaveSandboxFile(id, mainName, mainContent, false)
+		_, _ = a.AddFileNote(id, mainName, "Initial Observations", fmt.Sprintf("# Initial Notes for %s\n\nObservations and benchmark notes.", mainName))
 	}
 
 	return &Sandbox{

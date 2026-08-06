@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function ActivateSandbox(arg1:string,arg2:string):Promise<void>;
 
+export function AddFileNote(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.FileNote>;
+
 export function BackupWorkspace(arg1:string):Promise<string>;
 
 export function CloseDB():Promise<void>;
@@ -14,6 +16,8 @@ export function CreateSandboxInFolder(arg1:string,arg2:string,arg3:string):Promi
 
 export function CreateWorkspace(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.Workspace>;
 
+export function DeleteFileNote(arg1:string):Promise<void>;
+
 export function DeleteSandbox(arg1:string):Promise<void>;
 
 export function DeleteSandboxFile(arg1:string,arg2:string):Promise<void>;
@@ -23,6 +27,8 @@ export function DeleteWorkspace(arg1:string):Promise<void>;
 export function ExportSandbox(arg1:string):Promise<string>;
 
 export function GetCrabRootDirectory():Promise<string>;
+
+export function GetFileNotes(arg1:string,arg2:string):Promise<Array<main.FileNote>>;
 
 export function GetGlobalSettings():Promise<main.GlobalSettings>;
 
@@ -83,5 +89,7 @@ export function SaveWorkspaceConfig(arg1:string,arg2:string):Promise<void>;
 export function StartTerminalSession(arg1:string,arg2:string):Promise<void>;
 
 export function StopCommand(arg1:string):Promise<void>;
+
+export function UpdateFileNote(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function WriteTerminalInput(arg1:string,arg2:string):Promise<void>;

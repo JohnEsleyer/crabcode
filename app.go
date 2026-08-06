@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -53,6 +55,96 @@ func (a *App) ensureGlobalDBInitialized() error {
 	a.db = db
 
 	return a.migrate()
+}
+
+// legacyCommandFromNode extracts the command string for a legacy top-level
+// key (`run`, `build`, `test`) shaped as `key: {command: "..."}`. It is safe
+// against the old `build: []` shape, which is an empty sequence.
+func legacyCommandFromNode(mapping *yaml.Node, key string) string {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value != key {
+			continue
+		}
+		child := mapping.Content[i+1]
+		if child.Kind != yaml.MappingNode {
+			return ""
+		}
+		for j := 0; j+1 < len(child.Content); j += 2 {
+			if child.Content[j].Value == "command" {
+				return child.Content[j+1].Value
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// migrateLegacyWorkspaceConfigs rewrites workspaces whose config_yaml was
+// stored in the old template format (`run:`/`build:` objects) into the current
+// `mappings:` schema so Mappings.Run resolves for RunSandbox.
+func (a *App) migrateLegacyWorkspaceConfigs() error {
+	rows, err := a.db.Query("SELECT id, config_yaml FROM workspaces")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type wsRow struct {
+		id     string
+		cfgYML string
+	}
+	var workspaces []wsRow
+	for rows.Next() {
+		var r wsRow
+		if err := rows.Scan(&r.id, &r.cfgYML); err != nil {
+			return err
+		}
+		workspaces = append(workspaces, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, r := range workspaces {
+		var cfg DeclarativeConfig
+		if err := yaml.Unmarshal([]byte(r.cfgYML), &cfg); err != nil {
+			continue
+		}
+		if cfg.Mappings.Run != "" {
+			continue // already in current schema
+		}
+
+		var root yaml.Node
+		if err := yaml.Unmarshal([]byte(r.cfgYML), &root); err != nil {
+			continue
+		}
+		if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+			continue
+		}
+		mapping := root.Content[0]
+		if mapping.Kind != yaml.MappingNode {
+			continue
+		}
+
+		runCmd := legacyCommandFromNode(mapping, "run")
+		if runCmd == "" {
+			continue // not a legacy config carrying a run command
+		}
+
+		cfg.Mappings.Run = runCmd
+		cfg.Mappings.Build = legacyCommandFromNode(mapping, "build")
+		cfg.Mappings.Test = legacyCommandFromNode(mapping, "test")
+
+		out, err := yaml.Marshal(&cfg)
+		if err != nil {
+			continue
+		}
+		if _, err := a.db.Exec("UPDATE workspaces SET config_yaml = ? WHERE id = ?", string(out), r.id); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (a *App) CloseDB() {
@@ -127,6 +219,16 @@ func (a *App) migrate() error {
 			FOREIGN KEY(sandbox_id) REFERENCES sandboxes(id) ON DELETE CASCADE,
 			UNIQUE(sandbox_id, path)
 		);`,
+		`CREATE TABLE IF NOT EXISTS file_notes (
+			id TEXT PRIMARY KEY,
+			sandbox_id TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(sandbox_id) REFERENCES sandboxes(id) ON DELETE CASCADE
+		);`,
 	}
 
 	for _, query := range queries {
@@ -148,6 +250,12 @@ func (a *App) migrate() error {
 		if err := a.ensureColumn(col.table, col.column, col.ddl); err != nil {
 			return err
 		}
+	}
+
+	// Upgrade legacy template-based workspace configs (old `run:`/`build:` shape)
+	// to the current `mappings:` schema used by DeclarativeConfig.
+	if err := a.migrateLegacyWorkspaceConfigs(); err != nil {
+		return err
 	}
 
 	// Default Workspace Bootstrap

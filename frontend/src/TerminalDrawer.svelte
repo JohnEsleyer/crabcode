@@ -1,9 +1,10 @@
 <script>
-  import { Terminal, Code2, Plus, X, Trash2, Copy, CornerDownLeft, SquareTerminal } from '@lucide/svelte';
+  import { Terminal, Code2, Plus, X, Trash2, Copy, CornerDownLeft, SquareTerminal, Activity } from '@lucide/svelte';
 
   let {
     bottomMode = $bindable('console'),
     consoleLogs = $bindable([]),
+    systemLogs = $bindable([]),
     consoleStatus = $bindable('Ready'),
     isConsoleRunning = false,
     terminals = $bindable([]),
@@ -55,7 +56,8 @@
   }
 
   async function handleCopyConsole() {
-    const text = consoleLogs.map(l => l.text || l).join('\n');
+    const logsToCopy = (bottomMode === 'syslog') ? systemLogs : consoleLogs;
+    const text = logsToCopy.map(l => l.text || l).join('\n');
     try {
       await navigator.clipboard.writeText(text);
     } catch (_) {}
@@ -81,9 +83,20 @@
           onclick={() => bottomMode = 'console'}
         >
           <Code2 size={13} />
-          <span>Console</span>
+          <span>Console Output</span>
           {#if isConsoleRunning}
             <span class="active-dot running" title="Executing code..."></span>
+          {/if}
+        </button>
+        <button
+          class="mode-tab-btn"
+          class:active={bottomMode === 'syslog'}
+          onclick={() => bottomMode = 'syslog'}
+        >
+          <Activity size={13} />
+          <span>System Logs</span>
+          {#if systemLogs.length > 0}
+            <span class="log-count-badge">{systemLogs.length}</span>
           {/if}
         </button>
         <button
@@ -100,11 +113,11 @@
       </div>
 
       <div class="panel-actions">
-        {#if bottomMode === 'console'}
-          <button class="panel-btn" onclick={handleCopyConsole} title="Copy console output">
+        {#if bottomMode === 'console' || bottomMode === 'syslog'}
+          <button class="panel-btn" onclick={handleCopyConsole} title="Copy output">
             <Copy size={12} /> Copy
           </button>
-          <button class="panel-btn" onclick={onClearConsole} title="Clear console output">
+          <button class="panel-btn" onclick={onClearConsole} title="Clear logs">
             <Trash2 size={12} /> Clear
           </button>
         {/if}
@@ -130,10 +143,29 @@
         {#if consoleLogs.length === 0}
           <div class="console-empty-hint">
             <Code2 size={16} />
-            <span>Console output is clean. Click 'Run' to execute code.</span>
+            <span>Console output clean. Click 'Run Experiment' to execute code.</span>
           </div>
         {/if}
       </div>
+
+    {:else if bottomMode === 'syslog'}
+      <div class="console-body" id="syslog-output-view">
+        {#each systemLogs as log}
+          <div class="console-line log-type-{log.type || 'info'}">
+            {#if log.time}
+              <span class="log-time">[{formatTime(log.time)}]</span>
+            {/if}
+            <span class="log-text">{log.text || log}</span>
+          </div>
+        {/each}
+        {#if systemLogs.length === 0}
+          <div class="console-empty-hint">
+            <Activity size={16} />
+            <span>No system background logs generated yet.</span>
+          </div>
+        {/if}
+      </div>
+
     {:else}
       <div class="terminal-body-wrap">
         <div class="console-body" id="terminal-output-view">
@@ -144,7 +176,7 @@
           {:else}
             <div class="console-empty-hint">
               <SquareTerminal size={16} />
-              <span>No active terminal. Click '+' to start an interactive shell session.</span>
+              <span>No active terminal session. Click '+' to open shell.</span>
             </div>
           {/if}
         </div>
@@ -154,7 +186,7 @@
           <input
             type="text"
             class="terminal-input-field"
-            placeholder="Type a command..."
+            placeholder="Type command..."
             value={activeTerm?.inputBuffer || ''}
             oninput={(e) => {
               if (activeTerm) activeTerm.inputBuffer = e.target.value;
@@ -175,7 +207,7 @@
   {#if bottomMode === 'terminal'}
     <div class="terminal-tabs-sidebar">
       <div class="tabs-sidebar-header">
-        <span>SHELL TABS</span>
+        <span>SHELL SESSIONS</span>
         <button class="add-term-tab-btn" onclick={onAddTerminal} title="New Terminal Session">
           <Plus size={12} />
         </button>
@@ -283,6 +315,15 @@
     border-color: #ff5a3633;
   }
 
+  .log-count-badge {
+    background-color: #2d3748;
+    color: #a0aec0;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 10px;
+  }
+
   .active-dot {
     width: 6px;
     height: 6px;
@@ -361,21 +402,10 @@
     font-size: 11px;
   }
 
-  .log-type-error .log-text {
-    color: #fc8181;
-  }
-
-  .log-type-success .log-text {
-    color: #68d391;
-  }
-
-  .log-type-out .log-text {
-    color: #e2e8f0;
-  }
-
-  .log-type-info .log-text {
-    color: #cbd5e0;
-  }
+  .log-type-error .log-text { color: #fc8181; }
+  .log-type-success .log-text { color: #68d391; }
+  .log-type-out .log-text { color: #e2e8f0; }
+  .log-type-info .log-text { color: #a0aec0; }
 
   .console-empty-hint {
     display: flex;
@@ -438,7 +468,6 @@
     padding: 4px 6px;
     display: flex;
     align-items: center;
-    transition: background-color 0.15s, color 0.15s;
   }
 
   .terminal-send-btn:hover:not(:disabled) {
@@ -501,7 +530,6 @@
     color: #9ca3af;
     font-size: 11px;
     border-bottom: 1px solid #12121c;
-    transition: background-color 0.1s;
     gap: 4px;
   }
 
@@ -532,13 +560,8 @@
     flex-shrink: 0;
   }
 
-  .tab-status-dot.running {
-    background-color: #48bb78;
-  }
-
-  .tab-status-dot.stopped {
-    background-color: #4b5563;
-  }
+  .tab-status-dot.running { background-color: #48bb78; }
+  .tab-status-dot.stopped { background-color: #4b5563; }
 
   .tab-title {
     overflow: hidden;
@@ -559,11 +582,6 @@
     opacity: 0;
   }
 
-  .terminal-tab-item:hover .tab-close-btn {
-    opacity: 1;
-  }
-
-  .tab-close-btn:hover {
-    color: #ff5a36;
-  }
+  .terminal-tab-item:hover .tab-close-btn { opacity: 1; }
+  .tab-close-btn:hover { color: #ff5a36; }
 </style>

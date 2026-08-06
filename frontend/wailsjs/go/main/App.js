@@ -6,6 +6,10 @@ export function ActivateSandbox(arg1, arg2) {
   return window['go']['main']['App']['ActivateSandbox'](arg1, arg2);
 }
 
+export function AddFileNote(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AddFileNote'](arg1, arg2, arg3, arg4);
+}
+
 export function BackupWorkspace(arg1) {
   return window['go']['main']['App']['BackupWorkspace'](arg1);
 }
@@ -26,6 +30,10 @@ export function CreateWorkspace(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateWorkspace'](arg1, arg2, arg3, arg4);
 }
 
+export function DeleteFileNote(arg1) {
+  return window['go']['main']['App']['DeleteFileNote'](arg1);
+}
+
 export function DeleteSandbox(arg1) {
   return window['go']['main']['App']['DeleteSandbox'](arg1);
 }
@@ -44,6 +52,10 @@ export function ExportSandbox(arg1) {
 
 export function GetCrabRootDirectory() {
   return window['go']['main']['App']['GetCrabRootDirectory']();
+}
+
+export function GetFileNotes(arg1, arg2) {
+  return window['go']['main']['App']['GetFileNotes'](arg1, arg2);
 }
 
 export function GetGlobalSettings() {
@@ -164,6 +176,10 @@ export function StartTerminalSession(arg1, arg2) {
 
 export function StopCommand(arg1) {
   return window['go']['main']['App']['StopCommand'](arg1);
+}
+
+export function UpdateFileNote(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateFileNote'](arg1, arg2, arg3);
 }
 
 export function WriteTerminalInput(arg1, arg2) {

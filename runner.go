@@ -46,17 +46,37 @@ func (a *App) InitializeEnvironment(workspaceID string) error {
 		return fmt.Errorf("failed to create environment folder: %w", err)
 	}
 
+	runtime.EventsEmit(a.ctx, "setup_output", map[string]interface{}{
+		"workspaceId": workspaceID,
+		"line":        fmt.Sprintf("[INIT] Preparing runtime for workspace '%s'...\n", workspaceID),
+	})
+
 	for _, step := range cfg.Setup {
 		if step.Command == "" {
 			continue
 		}
+		runtime.EventsEmit(a.ctx, "setup_output", map[string]interface{}{
+			"workspaceId": workspaceID,
+			"line":        fmt.Sprintf("[SETUP] Executing step '%s': %s\n", step.Name, step.Command),
+		})
+
 		if err := a.executeSyncCommandToTerm("setup", step.Command, runtimeDir, cfg.EnvVars); err != nil {
+			runtime.EventsEmit(a.ctx, "setup_output", map[string]interface{}{
+				"workspaceId": workspaceID,
+				"line":        fmt.Sprintf("[ERROR] Setup step '%s' failed: %v\n", step.Name, err),
+			})
 			return fmt.Errorf("setup step '%s' failed: %w", step.Name, err)
 		}
 	}
 
 	marker := filepath.Join(runtimeDir, ".initialized")
 	_ = os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)), 0644)
+
+	runtime.EventsEmit(a.ctx, "setup_output", map[string]interface{}{
+		"workspaceId": workspaceID,
+		"line":        "[SUCCESS] Environment initialization completed successfully.\n",
+	})
+
 	return nil
 }
 
@@ -129,8 +149,7 @@ func (a *App) executeSyncCommandToTerm(termID string, cmdStr string, dir string,
 
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
-		runtime.EventsEmit(a.ctx, "terminal_output", map[string]interface{}{
-			"id":   termID,
+		runtime.EventsEmit(a.ctx, "setup_output", map[string]interface{}{
 			"line": string(output),
 		})
 	}
