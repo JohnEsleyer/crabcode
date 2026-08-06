@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -39,7 +40,7 @@ func (a *App) GetSandboxes(workspaceID string) ([]Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID string, folder string) (*Sandbox, error) {
+func (a *App) CreateSandboxInFolder(workspaceID string, name string, folder string) (*Sandbox, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
 	}
@@ -48,31 +49,15 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID 
 		workspaceID = "default"
 	}
 
-	templates, err := a.GetTemplates()
-	if err != nil || len(templates) == 0 {
-		return nil, fmt.Errorf("failed to load templates: %w", err)
-	}
-
-	var selectedTemplate TemplateSpec
-	found := false
-	for _, t := range templates {
-		if t.ID == templateID {
-			selectedTemplate = t
-			found = true
-			break
-		}
-	}
-	if !found {
-		selectedTemplate = templates[0]
-	}
-
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	now := time.Now().Format(time.RFC3339)
 
-	markdownNote := selectedTemplate.Config.Notes.Markdown
-	htmlNote := selectedTemplate.Config.Notes.HTML
+	cfg, _ := a.GetWorkspaceConfig(workspaceID)
 
-	_, err = a.db.Exec(
+	markdownNote := fmt.Sprintf("# %s\n\nDerivative experiment in this workspace.", name)
+	htmlNote := fmt.Sprintf("<h3>🧪 Experiment: %s</h3>", name)
+
+	_, err := a.db.Exec(
 		"INSERT INTO sandboxes (id, workspace_id, name, folder, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		id, workspaceID, name, folder, markdownNote, htmlNote, now, now,
 	)
@@ -80,9 +65,9 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID 
 		return nil, err
 	}
 
-	for _, f := range selectedTemplate.Files {
-		_ = a.SaveSandboxFile(id, f.Path, f.Content, f.IsDir)
-	}
+	// Create default starter file matching workspace config
+	mainFileName, mainContent := getStarterFileForConfig(cfg)
+	_ = a.SaveSandboxFile(id, mainFileName, mainContent, false)
 
 	sb := &Sandbox{
 		ID:           id,
@@ -99,8 +84,36 @@ func (a *App) CreateSandboxInFolder(workspaceID string, name string, templateID 
 	return sb, nil
 }
 
-func (a *App) CreateSandbox(workspaceID string, name string, templateID string) (*Sandbox, error) {
-	return a.CreateSandboxInFolder(workspaceID, name, templateID, "")
+func (a *App) CreateSandbox(workspaceID string, name string) (*Sandbox, error) {
+	return a.CreateSandboxInFolder(workspaceID, name, "")
+}
+
+func getStarterFileForConfig(cfg *DeclarativeConfig) (string, string) {
+	if cfg == nil {
+		return "main.py", "# Sandbox Experiment\nprint('Hello from CrabCode!')\n"
+	}
+
+	env := strings.ToLower(cfg.Environment)
+	cmd := strings.ToLower(cfg.Mappings.Run)
+
+	switch {
+	case env == "go" || strings.Contains(cmd, ".go"):
+		return "main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from CrabCode Sandbox!\")\n}\n"
+	case env == "rust" || strings.Contains(cmd, ".rs"):
+		return "main.rs", "fn main() {\n    println!(\"Hello from CrabCode Sandbox!\");\n}\n"
+	case env == "java" || strings.Contains(cmd, ".java"):
+		return "Main.java", "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello from CrabCode Sandbox!\");\n    }\n}\n"
+	case env == "node" || env == "javascript" || strings.Contains(cmd, ".js"):
+		return "index.js", "// Sandbox Experiment\nconsole.log('Hello from CrabCode Sandbox!');\n"
+	case env == "typescript" || strings.Contains(cmd, ".ts"):
+		return "index.ts", "// Sandbox Experiment\nconst msg: string = 'Hello from CrabCode Sandbox!';\nconsole.log(msg);\n"
+	case env == "sql" || strings.Contains(cmd, ".sql"):
+		return "main.sql", "-- SQL Sandbox\nSELECT 'Hello from CrabCode Sandbox!';\n"
+	case env == "surrealdb" || strings.Contains(cmd, ".surql"):
+		return "main.surql", "-- SurrealDB Sandbox\nSELECT 'Hello from CrabCode Sandbox!';\n"
+	default:
+		return "main.py", "# Sandbox Experiment\nprint('Hello from CrabCode Sandbox!')\n"
+	}
 }
 
 func (a *App) MoveSandbox(id string, folder string) error {
@@ -181,7 +194,7 @@ func (a *App) SaveSandboxFile(sandboxID string, path string, content string, isD
 		fmt.Sprintf("%d", time.Now().UnixNano()), sandboxID, path, content, isDirInt, now,
 	)
 
-	// If this sandbox is active, sync immediately to disk
+	// If active, write file immediately to disk
 	var workspaceID, activeSandboxID string
 	_ = a.db.QueryRow("SELECT workspace_id FROM sandboxes WHERE id = ?", sandboxID).Scan(&workspaceID)
 	_ = a.db.QueryRow("SELECT active_sandbox_id FROM workspaces WHERE id = ?", workspaceID).Scan(&activeSandboxID)
@@ -243,7 +256,7 @@ func (a *App) ImportSandbox(workspaceID string, jsonContent string) (*Sandbox, e
 		return nil, err
 	}
 
-	sb, err := a.CreateSandboxInFolder(workspaceID, payload.Sandbox.Name+" (Imported)", "python", payload.Sandbox.Folder)
+	sb, err := a.CreateSandboxInFolder(workspaceID, payload.Sandbox.Name+" (Imported)", payload.Sandbox.Folder)
 	if err != nil {
 		return nil, err
 	}

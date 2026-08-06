@@ -28,15 +28,16 @@
     IsEnvironmentInitialized,
     InitializeEnvironment,
     GetGlobalSettings,
-    GetTemplates
+    GetTemplates,
+    ResetAndReinitializeEverything
   } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import TerminalDrawer from './TerminalDrawer.svelte';
   import { onMount, onDestroy, untrack } from 'svelte';
   import {
     Play, Square, Settings, Database, BookOpen, Plus, Trash2, Columns,
-    PanelLeft, ChevronLeft, Save, Sparkles, FileCode, Layers, Eye, Edit3, Folder,
-    FolderPlus, Download, Upload, FlaskConical, Archive, FolderInput
+    PanelLeft, Save, Sparkles, FileCode, Eye, Edit3, Folder,
+    FolderPlus, Download, Upload, FlaskConical, Archive, AlertTriangle, RefreshCw, CheckCircle2
   } from '@lucide/svelte';
 
   import { EditorView, basicSetup } from 'codemirror';
@@ -65,7 +66,6 @@
   let activeWorkspaceId = $state('default');
   let activeWorkspaceObj = $derived(workspacesList.find(w => w.id === activeWorkspaceId) || null);
 
-  let statusMessage = $state('CrabCode Laboratory Ready');
   let showSidebar = $state(true);
 
   // Sandboxes State
@@ -99,22 +99,36 @@
   let settingsCrabRootPath = $state('');
   let toasts = $state([]);
   let modal = $state({ show: false, title: '', placeholder: '', value: '', onConfirm: null, onCancel: null });
+
+  // Workspace Creation Modal State
+  let showCreateWorkspaceModal = $state(false);
+  let wsConfigMode = $state('template'); // 'template' or 'custom'
+  let newWorkspaceName = $state('');
+  let newWorkspaceDesc = $state('');
+  let selectedWsTemplate = $state('python');
+  let customWsConfigYaml = $state(`name: "Custom Workspace"
+version: "1.0"
+environment: "python"
+setup: []
+mappings:
+  run: "python3 main.py"
+  test: "pytest"
+env_vars:
+  PYTHONUNBUFFERED: "1"
+`);
+  let availableTemplates = $state([]);
+
+  // Sandbox Creation Modal State
   let showCreateSandboxModal = $state(false);
   let newSandboxName = $state('');
   let selectedSandboxFolder = $state('');
-  let selectedSandboxTemplate = $state('python');
-  let availableTemplates = $state([]);
-
-  let showCreateWorkspaceModal = $state(false);
-  let newWorkspaceName = $state('');
-  let newWorkspaceDesc = $state('');
-
-  let showMoveSandboxModal = $state(false);
-  let moveSandboxId = $state('');
 
   let showInitEnvModal = $state(false);
   let isInitializingEnv = $state(false);
   let isEnvInitialized = $state(true);
+
+  let showResetConfirmModal = $state(false);
+  let isResetting = $state(false);
 
   let sandboxEditorContainer = $state(null);
   let sandboxView = null;
@@ -288,7 +302,8 @@
       virtualFolders = Array.from(foldersSet);
 
       if (sandboxesList.length > 0) {
-        await selectSandbox(sandboxesList[0]);
+        const activeSb = sandboxesList.find(s => s.isActive) || sandboxesList[0];
+        await selectSandbox(activeSb);
       } else {
         clearActiveSandbox();
       }
@@ -300,20 +315,36 @@
   async function switchWorkspace(wsId) {
     if (activeWorkspaceId === wsId) return;
     activeWorkspaceId = wsId;
-    addToast('Switched lab workspace', 'info');
+    addToast('Switched workspace runtime', 'info');
     await loadSandboxesForWorkspace(wsId);
+  }
+
+  async function openCreateWorkspaceModal() {
+    newWorkspaceName = '';
+    newWorkspaceDesc = '';
+    wsConfigMode = 'template';
+    try {
+      availableTemplates = await GetTemplates();
+      if (availableTemplates.length > 0) {
+        selectedWsTemplate = availableTemplates[0].id;
+      }
+    } catch (err) {
+      addToast('Failed to load environment templates: ' + String(err), 'error');
+    }
+    showCreateWorkspaceModal = true;
   }
 
   async function handleCreateWorkspace() {
     if (!newWorkspaceName.trim()) return;
     try {
-      const ws = await CreateWorkspace(newWorkspaceName.trim(), newWorkspaceDesc.trim());
+      const tmplId = (wsConfigMode === 'template') ? selectedWsTemplate : '';
+      const customYaml = (wsConfigMode === 'custom') ? customWsConfigYaml : '';
+
+      const ws = await CreateWorkspace(newWorkspaceName.trim(), newWorkspaceDesc.trim(), tmplId, customYaml);
       showCreateWorkspaceModal = false;
-      newWorkspaceName = '';
-      newWorkspaceDesc = '';
       workspacesList = [ws, ...workspacesList];
       await switchWorkspace(ws.id);
-      addToast('Workspace created', 'success');
+      addToast('Workspace created with environment config', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
@@ -388,41 +419,9 @@
     }
   }
 
-  function openMoveSandboxModal(sandboxId) {
-    moveSandboxId = sandboxId;
-    showMoveSandboxModal = true;
-  }
-
-  async function confirmMoveSandbox(targetFolder) {
-    showMoveSandboxModal = false;
-    const id = moveSandboxId;
-    moveSandboxId = '';
-    try {
-      await MoveSandbox(id, targetFolder);
-      const si = sandboxesList.findIndex(s => s.id === id);
-      if (si !== -1) {
-        if (targetFolder && !virtualFolders.includes(targetFolder)) {
-          virtualFolders = [...virtualFolders, targetFolder];
-        }
-        sandboxesList[si].folder = targetFolder;
-      }
-      addToast('Sandbox moved', 'success');
-    } catch (err) {
-      addToast(String(err), 'error');
-    }
-  }
-
   async function openCreateSandboxModal(defaultFolder = '') {
     newSandboxName = '';
     selectedSandboxFolder = defaultFolder;
-    try {
-      availableTemplates = await GetTemplates();
-      if (availableTemplates.length > 0) {
-        selectedSandboxTemplate = availableTemplates[0].id;
-      }
-    } catch (err) {
-      addToast('Failed to load templates: ' + String(err), 'error');
-    }
     showCreateSandboxModal = true;
   }
 
@@ -430,10 +429,10 @@
     const name = newSandboxName.trim() || 'Experiment';
     showCreateSandboxModal = false;
     try {
-      const sandbox = await CreateSandboxInFolder(activeWorkspaceId, name, selectedSandboxTemplate, selectedSandboxFolder);
+      const sandbox = await CreateSandboxInFolder(activeWorkspaceId, name, selectedSandboxFolder);
       sandboxesList = [sandbox, ...sandboxesList];
       await selectSandbox(sandbox);
-      addToast('Sandbox created', 'success');
+      addToast('Sandbox experiment created', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
@@ -464,11 +463,25 @@
   }
 
   async function selectSandbox(sandbox) {
-    if (activeSandboxId === sandbox.id) return;
+    if (activeSandboxId === sandbox.id && sandbox.isActive) return;
+
+    try {
+      await ActivateSandbox(activeWorkspaceId, sandbox.id);
+    } catch (err) {
+      addToast('Failed to activate sandbox code: ' + String(err), 'error');
+    }
+
+    sandboxesList = sandboxesList.map(s => ({
+      ...s,
+      isActive: (s.id === sandbox.id)
+    }));
+
     activeSandboxId = sandbox.id;
     activeSandboxName = sandbox.name;
-    activeSandboxConfig = sandbox.configYaml;
-    lastSavedSandboxConfig = sandbox.configYaml;
+
+    const wsConfig = activeWorkspaceObj?.configYaml || '';
+    activeSandboxConfig = wsConfig;
+    lastSavedSandboxConfig = wsConfig;
 
     activeSandboxMarkdownNote = sandbox.markdownNote || '';
     activeSandboxHTMLNote = sandbox.htmlNote || '';
@@ -484,10 +497,8 @@
     lastSavedSandboxFileContent = '';
 
     try {
-      isEnvInitialized = await IsEnvironmentInitialized(sandbox.id);
+      isEnvInitialized = await IsEnvironmentInitialized(activeWorkspaceId);
     } catch (_) { isEnvInitialized = false; }
-
-    if (!isEnvInitialized) showInitEnvModal = true;
 
     await refreshSandboxFiles();
 
@@ -510,21 +521,21 @@
 
   async function handleCreateSandboxFile() {
     if (!activeSandboxId) return;
-    const name = await openPrompt('New Virtual File', 'main.py');
+    const name = await openPrompt('New Sandbox File', 'main.py');
     if (!name) return;
     try {
-      await SaveSandboxFile(activeSandboxId, name, '# Sandbox virtual file\n', false);
+      await SaveSandboxFile(activeSandboxId, name, '# Sandbox source code\n', false);
       await refreshSandboxFiles();
       const created = sandboxFilesList.find(f => f.path === name);
       if (created) await selectSandboxFile(created);
-      addToast('Virtual file created', 'success');
+      addToast('File created', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
   }
 
   async function handleDeleteSandboxFile(path) {
-    if (!activeSandboxId || !confirm('Delete this virtual file?')) return;
+    if (!activeSandboxId || !confirm('Delete this file?')) return;
     try {
       await DeleteSandboxFile(activeSandboxId, path);
       if (activeSandboxFilePath === path) {
@@ -534,7 +545,7 @@
         lastSavedSandboxFileContent = '';
       }
       await refreshSandboxFiles();
-      addToast('Virtual file deleted', 'success');
+      addToast('File deleted', 'success');
     } catch (err) {
       addToast(String(err), 'error');
     }
@@ -552,8 +563,6 @@
       if (activeSandboxConfigUnsaved) {
         await SaveWorkspaceConfig(activeWorkspaceId, activeSandboxConfig);
         lastSavedSandboxConfig = activeSandboxConfig;
-        const si = sandboxesList.findIndex(s => s.id === activeSandboxId);
-        if (si !== -1) sandboxesList[si].configYaml = activeSandboxConfig;
       }
 
       if (activeSandboxNotesUnsaved) {
@@ -679,7 +688,7 @@
     if (!activeSandboxId) return;
 
     try {
-      const isInit = await IsEnvironmentInitialized(activeSandboxId);
+      const isInit = await IsEnvironmentInitialized(activeWorkspaceId);
       if (!isInit) {
         showInitEnvModal = true;
         consoleStatus = 'Uninitialized Env';
@@ -692,7 +701,7 @@
       consoleLogs = [...consoleLogs, { time: Date.now(), text: `[Running ${activeSandboxName}...]`, type: 'info' }];
 
       await handleSaveSandbox();
-      await RunSandbox(runnerId, activeSandboxId, activeSandboxFilePath);
+      await RunSandbox(runnerId, activeWorkspaceId, activeSandboxFilePath);
     } catch (err) {
       if (String(err).includes("ENV_NOT_INITIALIZED")) {
         showInitEnvModal = true;
@@ -706,6 +715,20 @@
     }
   }
 
+  async function triggerInitializeEnvironment() {
+    isInitializingEnv = true;
+    try {
+      await InitializeEnvironment(activeWorkspaceId);
+      isEnvInitialized = true;
+      showInitEnvModal = false;
+      addToast('Environment dependencies initialized', 'success');
+    } catch (err) {
+      addToast('Init failed: ' + String(err), 'error');
+    } finally {
+      isInitializingEnv = false;
+    }
+  }
+
   async function stopActiveProcess() {
     if (activeRunnerId) {
       try { await StopCommand(activeRunnerId); } catch (_) {}
@@ -714,6 +737,27 @@
     consoleStatus = 'Stopped';
     isConsoleRunning = false;
     activeRunnerId = '';
+  }
+
+  async function confirmResetSystem() {
+    isResetting = true;
+    try {
+      await ResetAndReinitializeEverything();
+      showResetConfirmModal = false;
+      addToast('System reset successfully', 'success');
+      consoleLogs = [];
+      consoleStatus = 'Ready';
+      isConsoleRunning = false;
+      activeRunnerId = '';
+      sandboxTerminals = [];
+      clearActiveSandbox();
+      activeWorkspaceId = 'default';
+      await loadWorkspaces();
+    } catch (err) {
+      addToast('Reset failed: ' + String(err), 'error');
+    } finally {
+      isResetting = false;
+    }
   }
 
   function renderMarkdownLine(line) {
@@ -785,44 +829,104 @@
   </div>
 {/if}
 
+<!-- Workspace Creation Modal with Environment Templates -->
 {#if showCreateWorkspaceModal}
   <div class="modal-backdrop" onclick={() => showCreateWorkspaceModal = false} role="presentation">
-    <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
-      <div class="modal-header">Create Lab Workspace</div>
+    <div class="modal-box ws-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">Create Workspace Container</div>
       <div class="modal-body">
         <label class="sandbox-modal-label" for="wsName">Workspace Name</label>
-        <input type="text" id="wsName" class="modal-input" placeholder="e.g. React Experiments" bind:value={newWorkspaceName} />
+        <input type="text" id="wsName" class="modal-input" placeholder="e.g. Raylib Go Engine Lab" bind:value={newWorkspaceName} />
+
         <label class="sandbox-modal-label" for="wsDesc">Description</label>
-        <input type="text" id="wsDesc" class="modal-input" placeholder="Notes for this workspace..." bind:value={newWorkspaceDesc} />
+        <input type="text" id="wsDesc" class="modal-input" placeholder="Shared runtime description..." bind:value={newWorkspaceDesc} />
+
+        <div class="config-mode-toggle">
+          <button class="mode-btn" class:active={wsConfigMode === 'template'} onclick={() => wsConfigMode = 'template'}>
+            Select Environment Template
+          </button>
+          <button class="mode-btn" class:active={wsConfigMode === 'custom'} onclick={() => wsConfigMode = 'custom'}>
+            Custom Configuration YAML
+          </button>
+        </div>
+
+        {#if wsConfigMode === 'template'}
+          <label class="sandbox-modal-label">Environment Spec</label>
+          <div class="templates-grid">
+            {#each availableTemplates as tmpl}
+              <button class="template-option" class:selected={selectedWsTemplate === tmpl.id} onclick={() => selectedWsTemplate = tmpl.id}>
+                <span class="template-dot" style="background-color: {tmpl.iconColor}"></span>
+                <span class="template-name">{tmpl.name}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <label class="sandbox-modal-label">Declarative Workspace Specification (YAML)</label>
+          <textarea class="raw-textarea code-family yaml-editor" bind:value={customWsConfigYaml}></textarea>
+        {/if}
       </div>
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={() => showCreateWorkspaceModal = false}>Cancel</button>
-        <button class="modal-btn primary" onclick={handleCreateWorkspace}>Create</button>
+        <button class="modal-btn primary" onclick={handleCreateWorkspace}>Create Workspace</button>
       </div>
     </div>
   </div>
 {/if}
 
+<!-- Sandbox Creation Modal (No Environment Templates) -->
 {#if showCreateSandboxModal}
   <div class="modal-backdrop" onclick={() => showCreateSandboxModal = false} role="presentation">
-    <div class="modal-box sandbox-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+    <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <div class="modal-header">New Sandbox Experiment</div>
       <div class="modal-body">
+        <p class="guide-text">
+          Sandboxes inherit the environment and dependencies from <strong>{activeWorkspaceObj?.name}</strong>.
+        </p>
         <label class="sandbox-modal-label" for="sandboxName">Experiment Name</label>
-        <input type="text" id="sandboxName" class="modal-input" placeholder="My Experiment" bind:value={newSandboxName} />
-        <label class="sandbox-modal-label" for="tmpl">Template Spec</label>
-        <div class="templates-grid">
-          {#each availableTemplates as tmpl}
-            <button class="template-option" class:selected={selectedSandboxTemplate === tmpl.id} onclick={() => selectedSandboxTemplate = tmpl.id}>
-              <span class="template-dot" style="background-color: {tmpl.iconColor}"></span>
-              <span class="template-name">{tmpl.name}</span>
-            </button>
-          {/each}
-        </div>
+        <input type="text" id="sandboxName" class="modal-input" placeholder="e.g. Physics Demo" bind:value={newSandboxName} />
       </div>
       <div class="modal-footer">
         <button class="modal-btn secondary" onclick={() => showCreateSandboxModal = false}>Cancel</button>
         <button class="modal-btn primary" onclick={confirmCreateSandbox}>Create Sandbox</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showInitEnvModal}
+  <div class="modal-backdrop" onclick={() => showInitEnvModal = false} role="presentation">
+    <div class="modal-box" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header">Initialize Shared Environment</div>
+      <div class="modal-body">
+        <p class="guide-text">Run setup commands &amp; install workspace dependencies into environment directory?</p>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showInitEnvModal = false} disabled={isInitializingEnv}>Cancel</button>
+        <button class="modal-btn primary" onclick={triggerInitializeEnvironment} disabled={isInitializingEnv}>
+          {isInitializingEnv ? 'Initializing...' : 'Initialize Environment'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showResetConfirmModal}
+  <div class="modal-backdrop" onclick={() => showResetConfirmModal = false} role="presentation">
+    <div class="modal-box danger-modal" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+      <div class="modal-header danger-header"><AlertTriangle size={18} /> Reset System</div>
+      <div class="modal-body">
+        <p class="guide-text danger-text">
+          Are you sure you want to completely reset CrabCode?
+        </p>
+        <p class="guide-subtext">
+          This will wipe all SQLite databases, workspaces, sandboxes, and restore default settings.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn secondary" onclick={() => showResetConfirmModal = false} disabled={isResetting}>Cancel</button>
+        <button class="modal-btn danger-btn" onclick={confirmResetSystem} disabled={isResetting}>
+          <RefreshCw size={13} /> {isResetting ? 'Resetting...' : 'Yes, Reset Everything'}
+        </button>
       </div>
     </div>
   </div>
@@ -834,13 +938,13 @@
     <div class="top-header-left">
       <div class="logo-badge"><FlaskConical size={16} /> <span>CrabCode Lab</span></div>
       <div class="workspace-pill">
-        <span class="ws-pill-label">CONTAINER:</span>
+        <span class="ws-pill-label">WORKSPACE:</span>
         <select class="ws-dropdown" value={activeWorkspaceId} onchange={(e) => switchWorkspace(e.target.value)}>
           {#each workspacesList as ws}
             <option value={ws.id}>{ws.name}</option>
           {/each}
         </select>
-        <button class="ws-add-btn" onclick={() => showCreateWorkspaceModal = true} title="New Workspace Database"><Plus size={12} /></button>
+        <button class="ws-add-btn" onclick={openCreateWorkspaceModal} title="New Workspace Database"><Plus size={12} /></button>
       </div>
     </div>
 
@@ -883,7 +987,13 @@
                   <div class="folder-children-list">
                     {#each itemsInFolder as sandbox (sandbox.id)}
                       <div class="sb-item-row nested" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
-                        <div class="sb-item-title"><FlaskConical size={12} class="sb-icon" /><span>{sandbox.name}</span></div>
+                        <div class="sb-item-title">
+                          <FlaskConical size={12} class="sb-icon" />
+                          <span>{sandbox.name}</span>
+                          {#if sandbox.isActive}
+                            <span class="active-badge" title="Active Sandbox Code">ACTIVE</span>
+                          {/if}
+                        </div>
                         <div class="sb-item-actions">
                           <button class="sb-action-btn" onclick={(e) => { e.stopPropagation(); handleExportSandbox(sandbox.id); }} title="Export"><Download size={11} /></button>
                           <button class="sb-action-btn danger" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }} title="Delete"><Trash2 size={11} /></button>
@@ -897,7 +1007,13 @@
 
             {#each (folderGroupedSandboxes[''] || []) as sandbox (sandbox.id)}
               <div class="sb-item-row" class:active={activeSandboxId === sandbox.id} onclick={() => selectSandbox(sandbox)} role="button" tabindex="0">
-                <div class="sb-item-title"><FlaskConical size={13} class="sb-icon" /><span>{sandbox.name}</span></div>
+                <div class="sb-item-title">
+                  <FlaskConical size={13} class="sb-icon" />
+                  <span>{sandbox.name}</span>
+                  {#if sandbox.isActive}
+                    <span class="active-badge" title="Active Sandbox Code">ACTIVE</span>
+                  {/if}
+                </div>
                 <div class="sb-item-actions">
                   <button class="sb-action-btn" onclick={(e) => { e.stopPropagation(); handleExportSandbox(sandbox.id); }} title="Export"><Download size={11} /></button>
                   <button class="sb-action-btn danger" onclick={(e) => { e.stopPropagation(); handleDeleteSandbox(sandbox.id); }} title="Delete"><Trash2 size={11} /></button>
@@ -912,13 +1028,13 @@
       <main class="editor-panel">
         {#if activeSandboxId}
           <div class="sandbox-workbench">
-            <!-- Sandbox Workspace Control Bar -->
             <div class="sandbox-control-bar">
               <div class="control-left">
                 <button class="sidebar-toggle" onclick={() => showSidebar = !showSidebar} title="Toggle Sidebar">
                   <PanelLeft size={14} />
                 </button>
                 <input type="text" class="sandbox-title-input" value={activeSandboxName} oninput={(e) => handleAutoRenameSandbox(e.target.value)} />
+                <span class="runtime-badge"><CheckCircle2 size={11} /> {activeWorkspaceObj?.name}</span>
               </div>
               <div class="control-actions">
                 <button class="action-btn" onclick={() => showSandboxSplit = !showSandboxSplit}>
@@ -942,7 +1058,7 @@
                 {#if showSandboxExplorer}
                   <div class="v-files-sidebar">
                     <div class="v-files-header">
-                      <span>VIRTUAL FILES</span>
+                      <span>FILES</span>
                       <button class="icon-btn" onclick={handleCreateSandboxFile}><Plus size={12} /></button>
                     </div>
                     <div class="v-files-list">
@@ -963,7 +1079,7 @@
                   {#if activeSandboxFilePath}
                     <div class="sandbox-cm-container" bind:this={sandboxEditorContainer}></div>
                   {:else}
-                    <div class="empty-editor-hint">Select or create a virtual file to edit source code.</div>
+                    <div class="empty-editor-hint">Select or create a file to edit source code.</div>
                   {/if}
                 </div>
               </div>
@@ -974,7 +1090,7 @@
                   <div class="notes-tab-bar">
                     <button class="notes-tab" class:active={sandboxSplitType === 'markdown'} onclick={() => sandboxSplitType = 'markdown'}><BookOpen size={12} /> Notes</button>
                     <button class="notes-tab" class:active={sandboxSplitType === 'html'} onclick={() => sandboxSplitType = 'html'}><Sparkles size={12} /> Live Canvas</button>
-                    <button class="notes-tab" class:active={sandboxSplitType === 'yaml'} onclick={() => sandboxSplitType = 'yaml'}><Settings size={12} /> YAML Spec</button>
+                    <button class="notes-tab" class:active={sandboxSplitType === 'yaml'} onclick={() => sandboxSplitType = 'yaml'}><Settings size={12} /> Workspace YAML</button>
                   </div>
 
                   <div class="notes-pane-content">
@@ -987,7 +1103,7 @@
                           </button>
                         </div>
                         {#if isSandboxMarkdownEditing}
-                          <textarea class="raw-textarea" bind:value={activeSandboxMarkdownNote} placeholder="Write markdown lab observations..."></textarea>
+                          <textarea class="raw-textarea" bind:value={activeSandboxMarkdownNote} placeholder="Write markdown observations..."></textarea>
                         {:else}
                           <div class="markdown-preview">
                             {#each activeSandboxMarkdownNote.split('\n') as line}
@@ -1008,13 +1124,13 @@
                     {:else if sandboxSplitType === 'html'}
                       <div class="split-pane">
                         <div class="pane-action-header">
-                          <span class="pane-title">INTERACTIVE VISUAL CANVAS</span>
+                          <span class="pane-title">LIVE CANVAS</span>
                           <button class="edit-toggle-btn" onclick={() => isSandboxHTMLEditing = !isSandboxHTMLEditing}>
                             {#if isSandboxHTMLEditing}<Eye size={11} /> Live{:else}<Edit3 size={11} /> Edit{/if}
                           </button>
                         </div>
                         {#if isSandboxHTMLEditing}
-                          <textarea class="raw-textarea code-family" bind:value={activeSandboxHTMLNote} placeholder="HTML/SVG widget canvas..."></textarea>
+                          <textarea class="raw-textarea code-family" bind:value={activeSandboxHTMLNote} placeholder="HTML/SVG canvas..."></textarea>
                         {:else}
                           <div class="html-frame-wrapper">
                             <iframe title="Visual Frame" srcdoc={activeSandboxHTMLNote} sandbox="allow-scripts" class="html-iframe"></iframe>
@@ -1024,7 +1140,7 @@
 
                     {:else if sandboxSplitType === 'yaml'}
                       <div class="split-pane">
-                        <div class="pane-action-header"><span class="pane-title">DECLARATIVE YAML CONFIG</span></div>
+                        <div class="pane-action-header"><span class="pane-title">WORKSPACE SPEC (YAML)</span></div>
                         <textarea class="raw-textarea code-family" bind:value={activeSandboxConfig}></textarea>
                       </div>
                     {/if}
@@ -1057,8 +1173,8 @@
         {:else}
           <div class="empty-workbench">
             <FlaskConical size={48} style="color: #ff5a36;" />
-            <h2>Laboratory Sandbox Manager</h2>
-            <p>Select or create a sandbox experiment to begin prototyping.</p>
+            <h2>Laboratory Workbench Ready</h2>
+            <p>Select or create a sandbox experiment to begin coding.</p>
             <button class="modal-btn primary" onclick={() => openCreateSandboxModal('')}><Plus size={14} /> New Sandbox Experiment</button>
           </div>
         {/if}
@@ -1070,7 +1186,7 @@
         <div class="wm-header">
           <div>
             <h2>Database Workspaces Manager</h2>
-            <p>Organize isolated sandbox database containers, export backups, or restore labs.</p>
+            <p>Organize workspace runtime database containers and configurations.</p>
           </div>
           <div class="wm-actions">
             <label class="modal-btn secondary file-btn">
@@ -1081,7 +1197,7 @@
               <Upload size={13} /> Import Sandbox
               <input type="file" accept=".json" onchange={handleImportSandboxFile} hidden />
             </label>
-            <button class="modal-btn primary" onclick={() => showCreateWorkspaceModal = true}><Plus size={13} /> New Workspace</button>
+            <button class="modal-btn primary" onclick={openCreateWorkspaceModal}><Plus size={13} /> New Workspace</button>
           </div>
         </div>
 
@@ -1097,7 +1213,7 @@
               <p class="ws-card-desc">{ws.description || 'No description provided.'}</p>
               <div class="ws-card-footer">
                 <button class="modal-btn secondary" onclick={() => handleBackupWorkspace(ws.id)}><Archive size={12} /> Backup</button>
-                <button class="modal-btn primary" onclick={() => { switchWorkspace(ws.id); activeTab = 'lab'; }}>Select Container</button>
+                <button class="modal-btn primary" onclick={() => { switchWorkspace(ws.id); activeTab = 'lab'; }}>Select Workspace</button>
               </div>
             </div>
           {/each}
@@ -1110,6 +1226,16 @@
           <h2>CrabCode System Path</h2>
           <p>Global SQLite database location:</p>
           <input type="text" class="modal-input" bind:value={settingsCrabRootPath} readonly />
+
+          <div class="danger-zone">
+            <h3><AlertTriangle size={14} /> Factory Reset &amp; Reinitialization</h3>
+            <p class="danger-desc">
+              Wipe all SQLite database containers, workspace environments, sandboxes, and restore CrabCode to default state.
+            </p>
+            <button class="modal-btn danger-btn" onclick={() => showResetConfirmModal = true}>
+              <RefreshCw size={13} /> Reset System
+            </button>
+          </div>
         </div>
       </div>
     {/if}
@@ -1335,6 +1461,7 @@
 
   .sb-item-row:hover { background-color: #1a1a24; color: #edf2f7; }
   .sb-item-row.active { background-color: #ff5a3622; color: #ff5a36; font-weight: 600; }
+  .sb-item-row.nested { margin-left: 10px; }
 
   .sb-item-title {
     display: flex;
@@ -1344,6 +1471,21 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12px;
+  }
+
+  :global(.sb-icon) { color: #ff5a36; flex-shrink: 0; }
+
+  .active-badge {
+    font-size: 9px;
+    font-weight: 700;
+    color: #48bb78;
+    background-color: #48bb7818;
+    padding: 2px 5px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
   }
 
   .sb-item-actions {
@@ -1436,6 +1578,20 @@
     background-color: #12121a;
   }
 
+  .runtime-badge {
+    font-size: 10px;
+    font-weight: 700;
+    color: #ff8c73;
+    background-color: #ff5a3614;
+    border: 1px solid #ff5a3633;
+    padding: 3px 8px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
   .control-actions {
     display: flex;
     align-items: center;
@@ -1457,6 +1613,7 @@
   }
 
   .action-btn:hover { color: #edf2f7; border-color: #4a5568; }
+  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .action-btn.run { background-color: #48bb7822; color: #48bb78; border-color: #48bb7844; }
   .action-btn.run:hover { background-color: #48bb7833; }
   .action-btn.stop { background-color: #ff5a3622; color: #ff5a36; border-color: #ff5a3644; }
@@ -1654,6 +1811,11 @@
     color: #34d399;
   }
 
+  .yaml-editor {
+    height: 200px;
+    flex: none;
+  }
+
   .markdown-preview {
     flex: 1;
     padding: 14px;
@@ -1773,7 +1935,10 @@
     display: flex;
     flex-direction: column;
     box-shadow: 0 10px 25px #00000088;
+    max-height: 90vh;
   }
+
+  .modal-box.ws-modal { width: 520px; }
 
   .modal-header {
     padding: 14px 16px;
@@ -1788,6 +1953,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    overflow-y: auto;
   }
 
   .modal-input {
@@ -1807,6 +1973,26 @@
     font-weight: 600;
     color: #a0aec0;
   }
+
+  .config-mode-toggle {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .mode-btn {
+    flex: 1;
+    background-color: #07070a;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 8px;
+    color: #a0aec0;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .mode-btn.active { border-color: #ff5a36; background-color: #ff5a3614; color: #edf2f7; }
 
   .templates-grid {
     display: grid;
@@ -1856,10 +2042,13 @@
     gap: 6px;
   }
 
+  .modal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .modal-btn.primary { background-color: #ff5a36; color: #fff; }
   .modal-btn.primary:hover { background-color: #ff451d; }
   .modal-btn.secondary { background-color: #1a1a24; color: #a0aec0; border: 1px solid #2d3748; }
   .modal-btn.secondary:hover { color: #edf2f7; border-color: #4a5568; }
+  .modal-btn.danger-btn { background-color: #e53e3e; color: #fff; }
+  .modal-btn.danger-btn:hover { background-color: #c53030; }
 
   .file-btn { display: inline-flex; align-items: center; cursor: pointer; }
 
@@ -1878,4 +2067,62 @@
   .icon-btn:hover { color: #edf2f7; background-color: #1a1a24; }
   .icon-btn.primary { color: #ff5a36; }
   .icon-btn.danger:hover { color: #e53e3e; }
+
+  .settings-view {
+    flex: 1;
+    padding: 40px;
+    display: flex;
+    justify-content: center;
+    overflow-y: auto;
+  }
+
+  .settings-card {
+    background: #0c0c12;
+    border: 1px solid #1a1a24;
+    border-radius: 8px;
+    padding: 24px;
+    width: 520px;
+    height: fit-content;
+  }
+
+  .settings-card h2 {
+    margin: 0 0 8px 0;
+    font-size: 16px;
+    color: #edf2f7;
+  }
+
+  .settings-card > p {
+    font-size: 12px;
+    color: #718096;
+    margin: 0 0 6px 0;
+  }
+
+  .danger-zone {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid #2d374844;
+  }
+
+  .danger-zone h3 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: #fc8181;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .danger-desc {
+    font-size: 12px;
+    color: #a0aec0;
+    line-height: 1.5;
+    margin: 0 0 16px 0;
+  }
+
+  .danger-modal { border-color: #e53e3e44; }
+  .danger-header { color: #fc8181; display: flex; align-items: center; gap: 8px; }
+  .danger-text { color: #feb2b2; }
+
+  .guide-text { font-size: 12px; color: #a0aec0; line-height: 1.5; }
+  .guide-subtext { font-size: 11px; color: #718096; line-height: 1.4; margin-top: 6px; }
 </style>

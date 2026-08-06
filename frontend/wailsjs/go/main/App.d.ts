@@ -8,11 +8,11 @@ export function BackupWorkspace(arg1:string):Promise<string>;
 
 export function CloseDB():Promise<void>;
 
-export function CreateSandbox(arg1:string,arg2:string,arg3:string):Promise<main.Sandbox>;
+export function CreateSandbox(arg1:string,arg2:string):Promise<main.Sandbox>;
 
-export function CreateSandboxInFolder(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.Sandbox>;
+export function CreateSandboxInFolder(arg1:string,arg2:string,arg3:string):Promise<main.Sandbox>;
 
-export function CreateWorkspace(arg1:string,arg2:string,arg3:string):Promise<main.Workspace>;
+export function CreateWorkspace(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.Workspace>;
 
 export function DeleteSandbox(arg1:string):Promise<void>;
 
@@ -38,6 +38,8 @@ export function GetTemplatesDirectory():Promise<string>;
 
 export function GetWorkspaceConfig(arg1:string):Promise<main.DeclarativeConfig>;
 
+export function GetWorkspaceConfigString(arg1:string):Promise<string>;
+
 export function GetWorkspaceRuntimePath(arg1:string):Promise<string>;
 
 export function GetWorkspaces():Promise<Array<main.Workspace>>;
@@ -59,6 +61,8 @@ export function IsEnvironmentInitialized(arg1:string):Promise<boolean>;
 export function MoveSandbox(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSandbox(arg1:string,arg2:string):Promise<void>;
+
+export function ResetAndReinitializeEverything():Promise<void>;
 
 export function RestoreWorkspace(arg1:string):Promise<main.Workspace>;
 

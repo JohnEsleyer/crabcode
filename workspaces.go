@@ -38,7 +38,7 @@ func (a *App) GetWorkspaceRuntimePath(workspaceID string) string {
 	return filepath.Join(a.GetCrabRootDirectory(), "workspaces", workspaceID, "env")
 }
 
-func (a *App) CreateWorkspace(name string, description string, templateID string) (*Workspace, error) {
+func (a *App) CreateWorkspace(name string, description string, templateID string, customYAML string) (*Workspace, error) {
 	if a.db == nil {
 		return nil, errors.New("database not initialized")
 	}
@@ -46,20 +46,29 @@ func (a *App) CreateWorkspace(name string, description string, templateID string
 	id := fmt.Sprintf("ws_%d", time.Now().UnixNano())
 	now := time.Now().Format(time.RFC3339)
 
-	templates, _ := a.GetTemplates()
-	defaultYAML := `name: "` + name + `"` + "\nversion: \"1.0\"\nenvironment: \"python\"\nmappings:\n  run: \"python3 main.py\"\n"
+	var configYAML string
+	var selectedTemplate *TemplateSpec
 
-	for _, t := range templates {
-		if t.ID == templateID {
-			b, _ := yaml.Marshal(t.Config)
-			defaultYAML = string(b)
-			break
+	if customYAML != "" {
+		configYAML = customYAML
+	} else if templateID != "" {
+		templates, _ := a.GetTemplates()
+		for _, t := range templates {
+			if t.ID == templateID {
+				selectedTemplate = &t
+				configYAML = t.RawYAML
+				break
+			}
 		}
+	}
+
+	if configYAML == "" {
+		configYAML = `name: "` + name + `"` + "\nversion: \"1.0\"\nenvironment: \"python\"\nmappings:\n  run: \"python3 main.py\"\n"
 	}
 
 	_, err := a.db.Exec(
 		"INSERT INTO workspaces (id, name, description, config_yaml, active_sandbox_id, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, ?)",
-		id, name, description, defaultYAML, now, now,
+		id, name, description, configYAML, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -69,20 +78,74 @@ func (a *App) CreateWorkspace(name string, description string, templateID string
 		ID:          id,
 		Name:        name,
 		Description: description,
-		ConfigYAML:  defaultYAML,
+		ConfigYAML:  configYAML,
 		RuntimePath: a.GetWorkspaceRuntimePath(id),
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 
 	// Create Default Entry Sandbox for this Workspace
-	sb, err := a.CreateSandboxInFolder(id, "Main Sandbox", templateID, "")
+	sb, err := a.createDefaultSandboxForWorkspace(id, name, selectedTemplate)
 	if err == nil && sb != nil {
 		_ = a.ActivateSandbox(id, sb.ID)
 		ws.ActiveSandboxID = sb.ID
 	}
 
 	return ws, nil
+}
+
+func (a *App) createDefaultSandboxForWorkspace(workspaceID string, wsName string, tmpl *TemplateSpec) (*Sandbox, error) {
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	now := time.Now().Format(time.RFC3339)
+
+	markdownNote := "# " + wsName + " Sandbox\n\nShared environment sandbox experiment."
+	htmlNote := "<h3>🧪 " + wsName + " Primary Sandbox Active</h3>"
+
+	if tmpl != nil {
+		if tmpl.Config.Notes.Markdown != "" {
+			markdownNote = tmpl.Config.Notes.Markdown
+		}
+		if tmpl.Config.Notes.HTML != "" {
+			htmlNote = tmpl.Config.Notes.HTML
+		}
+	}
+
+	_, err := a.db.Exec(
+		"INSERT INTO sandboxes (id, workspace_id, name, folder, markdown_note, html_note, created_at, updated_at) VALUES (?, ?, 'Main Sandbox', '', ?, ?, ?, ?)",
+		id, workspaceID, markdownNote, htmlNote, now, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if tmpl != nil && len(tmpl.Files) > 0 {
+		for _, f := range tmpl.Files {
+			_ = a.SaveSandboxFile(id, f.Path, f.Content, f.IsDir)
+		}
+	} else {
+		var cfg DeclarativeConfig
+		_ = yaml.Unmarshal([]byte(a.GetWorkspaceConfigString(workspaceID)), &cfg)
+		mainName, mainContent := getStarterFileForConfig(&cfg)
+		_ = a.SaveSandboxFile(id, mainName, mainContent, false)
+	}
+
+	return &Sandbox{
+		ID:           id,
+		WorkspaceID:  workspaceID,
+		Name:         "Main Sandbox",
+		Folder:       "",
+		MarkdownNote: markdownNote,
+		HTMLNote:     htmlNote,
+		IsActive:     true,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, nil
+}
+
+func (a *App) GetWorkspaceConfigString(workspaceID string) string {
+	var configYaml string
+	_ = a.db.QueryRow("SELECT config_yaml FROM workspaces WHERE id = ?", workspaceID).Scan(&configYaml)
+	return configYaml
 }
 
 func (a *App) SaveWorkspaceConfig(workspaceID string, configYAML string) error {
@@ -112,7 +175,6 @@ func (a *App) DeleteWorkspace(id string) error {
 	return err
 }
 
-// ActivateSandbox hot-swaps the runtime folder with the chosen sandbox's code
 func (a *App) ActivateSandbox(workspaceID string, sandboxID string) error {
 	if a.db == nil {
 		return errors.New("database not initialized")
@@ -234,12 +296,10 @@ func (a *App) RestoreWorkspace(jsonContent string) (*Workspace, error) {
 		return nil, fmt.Errorf("invalid backup format: %w", err)
 	}
 
-	ws, err := a.CreateWorkspace(backup.Workspace.Name+" (Restored)", backup.Workspace.Description, "")
+	ws, err := a.CreateWorkspace(backup.Workspace.Name+" (Restored)", backup.Workspace.Description, "", backup.Workspace.ConfigYAML)
 	if err != nil {
 		return nil, err
 	}
-
-	_ = a.SaveWorkspaceConfig(ws.ID, backup.Workspace.ConfigYAML)
 
 	for _, sbExport := range backup.Sandboxes {
 		sbBytes, _ := json.Marshal(sbExport)

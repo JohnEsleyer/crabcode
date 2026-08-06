@@ -78,6 +78,7 @@ func (a *App) InitializeCrabFolder(path string) error {
 	_ = os.MkdirAll(settings.UniversalEnvDir, 0755)
 	_ = os.MkdirAll(filepath.Join(path, "playground"), 0755)
 	_ = os.MkdirAll(filepath.Join(path, "sandboxes"), 0755)
+	_ = os.MkdirAll(filepath.Join(path, "workspaces"), 0755)
 
 	_ = a.InitTemplates()
 	_ = a.ensureGlobalDBInitialized()
@@ -148,6 +149,38 @@ func (a *App) SaveGlobalSettings(settings GlobalSettings) error {
 	_ = os.WriteFile(settingsFile, data, 0644)
 
 	return a.ensureGlobalDBInitialized()
+}
+
+// ResetAndReinitializeEverything stops active processes, closes the database, wipes
+// all databases, workspaces, sandboxes, environments, templates, and playground
+// files, then rebuilds the default factory state.
+func (a *App) ResetAndReinitializeEverything() error {
+	a.processMutex.Lock()
+	for id, cmd := range a.activeProcesses {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		delete(a.activeProcesses, id)
+		delete(a.activeStdins, id)
+	}
+	a.processMutex.Unlock()
+
+	a.CloseDB()
+
+	root := a.GetCrabRootDirectory()
+
+	_ = os.Remove(filepath.Join(root, "crabcode.db"))
+	_ = os.RemoveAll(filepath.Join(root, "workspaces"))
+	_ = os.RemoveAll(filepath.Join(root, "environments"))
+	_ = os.RemoveAll(filepath.Join(root, "sandboxes"))
+	_ = os.RemoveAll(filepath.Join(root, "templates"))
+	_ = os.RemoveAll(filepath.Join(root, "playground"))
+
+	if err := a.InitializeCrabFolder(root); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func copyDir(src string, dst string) error {

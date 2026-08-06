@@ -14,16 +14,16 @@ export function CloseDB() {
   return window['go']['main']['App']['CloseDB']();
 }
 
-export function CreateSandbox(arg1, arg2, arg3) {
-  return window['go']['main']['App']['CreateSandbox'](arg1, arg2, arg3);
+export function CreateSandbox(arg1, arg2) {
+  return window['go']['main']['App']['CreateSandbox'](arg1, arg2);
 }
 
-export function CreateSandboxInFolder(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['CreateSandboxInFolder'](arg1, arg2, arg3, arg4);
+export function CreateSandboxInFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSandboxInFolder'](arg1, arg2, arg3);
 }
 
-export function CreateWorkspace(arg1, arg2, arg3) {
-  return window['go']['main']['App']['CreateWorkspace'](arg1, arg2, arg3);
+export function CreateWorkspace(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateWorkspace'](arg1, arg2, arg3, arg4);
 }
 
 export function DeleteSandbox(arg1) {
@@ -74,6 +74,10 @@ export function GetWorkspaceConfig(arg1) {
   return window['go']['main']['App']['GetWorkspaceConfig'](arg1);
 }
 
+export function GetWorkspaceConfigString(arg1) {
+  return window['go']['main']['App']['GetWorkspaceConfigString'](arg1);
+}
+
 export function GetWorkspaceRuntimePath(arg1) {
   return window['go']['main']['App']['GetWorkspaceRuntimePath'](arg1);
 }
@@ -116,6 +120,10 @@ export function MoveSandbox(arg1, arg2) {
 
 export function RenameSandbox(arg1, arg2) {
   return window['go']['main']['App']['RenameSandbox'](arg1, arg2);
+}
+
+export function ResetAndReinitializeEverything() {
+  return window['go']['main']['App']['ResetAndReinitializeEverything']();
 }
 
 export function RestoreWorkspace(arg1) {

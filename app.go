@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -60,6 +62,35 @@ func (a *App) CloseDB() {
 	}
 }
 
+// ensureColumn checks whether a column exists on a table and adds it via
+// ALTER TABLE when missing, so databases created by older schema versions
+// can be upgraded in place.
+func (a *App) ensureColumn(table string, column string, ddl string) error {
+	rows, err := a.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dflt interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+
+	_, err = a.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl))
+	return err
+}
+
 func (a *App) migrate() error {
 	if a.db == nil {
 		return errors.New("no active database connection")
@@ -104,6 +135,21 @@ func (a *App) migrate() error {
 		}
 	}
 
+	// Upgrade databases created by older schema versions.
+	for _, col := range []struct {
+		table, column, ddl string
+	}{
+		{"workspaces", "config_yaml", "TEXT NOT NULL DEFAULT ''"},
+		{"workspaces", "active_sandbox_id", "TEXT NOT NULL DEFAULT ''"},
+		{"sandboxes", "folder", "TEXT NOT NULL DEFAULT ''"},
+		{"sandboxes", "markdown_note", "TEXT NOT NULL DEFAULT ''"},
+		{"sandboxes", "html_note", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := a.ensureColumn(col.table, col.column, col.ddl); err != nil {
+			return err
+		}
+	}
+
 	// Default Workspace Bootstrap
 	var count int
 	_ = a.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE id = 'default'").Scan(&count)
@@ -118,10 +164,17 @@ mappings:
 env_vars:
   PYTHONUNBUFFERED: "1"
 `
+		now := time.Now().Format(time.RFC3339)
 		_, _ = a.db.Exec(
-			"INSERT INTO workspaces (id, name, description, config_yaml, active_sandbox_id, created_at, updated_at) VALUES ('default', 'Default Lab Workspace', 'Primary experimentation workspace', ?, '', DATETIME('now'), DATETIME('now'))",
-			defaultConfig,
+			"INSERT INTO workspaces (id, name, description, config_yaml, active_sandbox_id, created_at, updated_at) VALUES ('default', 'Default Lab Workspace', 'Primary experimentation workspace', ?, '', ?, ?)",
+			defaultConfig, now, now,
 		)
+
+		// Create default initial sandbox
+		sb, err := a.CreateSandboxInFolder("default", "Main Sandbox", "")
+		if err == nil && sb != nil {
+			_ = a.ActivateSandbox("default", sb.ID)
+		}
 	}
 
 	return nil
